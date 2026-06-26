@@ -121,6 +121,8 @@ export default function ResearchMap() {
                 height={Math.max(size.height, 420)}
                 backgroundColor="rgba(0,0,0,0)"
                 cooldownTicks={80}
+                d3VelocityDecay={0.32}
+                warmupTicks={60}
                 nodeId="id"
                 nodeLabel={(node) => nodeTooltip(node)}
                 nodeRelSize={5}
@@ -131,27 +133,10 @@ export default function ResearchMap() {
                 linkWidth={(link) => (link.cited || link.highlighted ? 2.2 : 1)}
                 onNodeClick={(node) => setSelectedNode(node)}
                 nodeCanvasObject={(node, ctx, globalScale) => drawNode(node, ctx, globalScale, selectedNode)}
+                nodePointerAreaPaint={(node, color, ctx) => paintPointerArea(node, color, ctx)}
               />
             )}
-            {query.trim() && graphData.nodes.length > 0 && (
-              <div
-                style={{
-                  position: "absolute",
-                  left: 18,
-                  bottom: 18,
-                  maxWidth: 420,
-                  padding: "10px 12px",
-                  border: "1px solid rgba(255, 191, 0, 0.35)",
-                  borderRadius: 14,
-                  background: "rgba(255, 248, 220, 0.92)",
-                  color: "var(--accent-primary-muted)",
-                  fontSize: 13,
-                  fontWeight: 700
-                }}
-              >
-                Query overlay: {query.trim()}
-              </div>
-            )}
+
           </div>
 
           <aside className="card graph-detail" aria-label="Selected graph node details">
@@ -218,36 +203,55 @@ function NodeDetails({ node }) {
 }
 
 function drawNode(node, ctx, globalScale, selectedNode) {
+  if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
+
   const type = normalizeType(node.type);
   const color = NODE_COLORS[type] || NODE_COLORS.thesis;
   const radius = nodeRadius(node);
   const isSelected = selectedNode && String(selectedNode.id) === String(node.id);
+  const isHighlighted = Boolean(node.highlighted || node.queryHighlighted || node.sourceHighlighted || isSelected);
+  const isCluster = type === "topic";
+
+  ctx.save();
+
+  if (isHighlighted || isCluster) {
+    const halo = ctx.createRadialGradient(node.x, node.y, radius, node.x, node.y, radius + (isHighlighted ? 24 : 16));
+    halo.addColorStop(0, isHighlighted ? "rgba(255, 191, 0, 0.26)" : "rgba(6, 214, 160, 0.12)");
+    halo.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius + (isHighlighted ? 24 : 16), 0, 2 * Math.PI, false);
+    ctx.fillStyle = halo;
+    ctx.fill();
+  }
 
   if (isSelected) {
     ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + 8, 0, 2 * Math.PI, false);
-    ctx.fillStyle = "rgba(255, 191, 0, 0.18)";
-    ctx.fill();
+    ctx.arc(node.x, node.y, radius + 9, 0, 2 * Math.PI, false);
+    ctx.strokeStyle = "rgba(255, 191, 0, 0.72)";
+    ctx.lineWidth = 2.4 / Math.max(globalScale, 0.8);
+    ctx.stroke();
   }
 
   ctx.beginPath();
   ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
   ctx.fillStyle = color;
+  ctx.shadowBlur = isSelected ? 20 : 9;
+  ctx.shadowColor = isSelected ? "rgba(255, 191, 0, 0.72)" : "rgba(36, 41, 47, 0.16)";
   ctx.fill();
-  ctx.lineWidth = isSelected ? 2.5 : 1.2;
-  ctx.strokeStyle = isSelected ? "#B8860B" : "#ffffff";
+  ctx.shadowBlur = 0;
+  ctx.lineWidth = isSelected ? 2.8 : 1.35;
+  ctx.strokeStyle = isSelected ? "#B8860B" : "rgba(255,255,255,0.95)";
   ctx.stroke();
 
-  const label = node.label || node.title || node.name;
-  const shouldLabel = isSelected || type !== "thesis" || globalScale > 1.6;
-  if (!label || !shouldLabel) return;
+  ctx.restore();
+}
 
-  const fontSize = Math.max(10, 12 / globalScale);
-  ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
-  ctx.textAlign = "center";
-  ctx.textBaseline = "top";
-  ctx.fillStyle = "rgba(36, 41, 47, 0.86)";
-  ctx.fillText(String(label).slice(0, 34), node.x, node.y + radius + 4);
+function paintPointerArea(node, color, ctx) {
+  if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, nodeRadius(node) + 10, 0, 2 * Math.PI, false);
+  ctx.fill();
 }
 
 function nodeRadius(node) {

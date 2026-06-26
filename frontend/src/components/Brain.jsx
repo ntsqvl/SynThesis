@@ -19,7 +19,7 @@ const EMPTY_SESSION = {
   activeCitation: null
 };
 
-export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResult, onBrainClear }) {
+export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResult, onBrainClear, onOpenReports }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const chatEndRef = useRef(null);
@@ -171,6 +171,7 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
                 key={message.id}
                 message={message}
                 onCitationClick={handleCitationClick}
+                onOpenReports={onOpenReports}
               />
             ))}
 
@@ -291,7 +292,7 @@ function starterCopy(title) {
   return "Methods, tools, datasets, and evaluation ideas grounded in cited records.";
 }
 
-function ChatMessage({ message, onCitationClick }) {
+function ChatMessage({ message, onCitationClick, onOpenReports }) {
   if (message.role === "user") {
     return (
       <div className="chat-message user">
@@ -302,9 +303,12 @@ function ChatMessage({ message, onCitationClick }) {
   }
 
   const sources = Array.isArray(message.sources) ? message.sources : [];
-  const sections = Array.isArray(message.sections) && message.sections.length > 0
-    ? message.sections
-    : normalizeSections(message.content);
+  const parsedContentSections = typeof message.content === "string" ? normalizeSections(message.content) : [];
+  const sections = parsedContentSections.length > 0
+    ? parsedContentSections
+    : Array.isArray(message.sections) && message.sections.length > 0
+      ? message.sections
+      : [];
 
   return (
     <div className="chat-message assistant">
@@ -314,7 +318,6 @@ function ChatMessage({ message, onCitationClick }) {
         {message.confidence !== null && message.confidence !== undefined && (
           <div className="meta-row message-meta">
             <ConfidenceBadge value={message.confidence} />
-            {sources.length > 0 && <span className="badge">{sources.length} repository records</span>}
           </div>
         )}
         <div className="assistant-sections">
@@ -328,6 +331,7 @@ function ChatMessage({ message, onCitationClick }) {
                 sources={sources}
                 message={message}
                 onCitationClick={onCitationClick}
+                onOpenReports={onOpenReports}
               />
             ))
           ) : (
@@ -351,13 +355,34 @@ function ConfidenceBadge({ value }) {
   return <span className="badge success">{label}</span>;
 }
 
-function AnswerSection({ title, content, index, sources, message, onCitationClick }) {
+function AnswerSection({ title, content, index, sources, message, onCitationClick, onOpenReports }) {
   const blocks = normalizeContentBlocks(content);
+  const sectionTitle = normalizeSectionTitle(title);
+  const isReportLink = sectionTitle === "Recommended Methods & Tools" && typeof onOpenReports === "function";
+  const openReports = () => {
+    if (isReportLink) onOpenReports();
+  };
 
   return (
-    <article className="answer-section chat-answer-section">
-      <span className="kicker">{DEFAULT_SECTIONS.includes(title) ? title : `Section ${index + 1}`}</span>
-      {!DEFAULT_SECTIONS.includes(title) && <h3>{title}</h3>}
+    <article
+      className={`answer-section chat-answer-section${isReportLink ? " report-link-card" : ""}`}
+      role={isReportLink ? "button" : undefined}
+      tabIndex={isReportLink ? 0 : undefined}
+      onClick={openReports}
+      onKeyDown={(event) => {
+        if (!isReportLink) return;
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          openReports();
+        }
+      }}
+      aria-label={isReportLink ? "Open the Reports tab for complete methodology and tools details" : undefined}
+    >
+      <div className="section-title-row">
+        <span className="kicker">{DEFAULT_SECTIONS.includes(sectionTitle) ? sectionTitle : `Section ${index + 1}`}</span>
+        {isReportLink && <span className="badge accent report-link-badge">Open full report</span>}
+      </div>
+      {!DEFAULT_SECTIONS.includes(sectionTitle) && <h3>{title}</h3>}
       {blocks.length === 0 ? (
         <p>No content returned for this section.</p>
       ) : (
@@ -529,23 +554,72 @@ function parseMarkdownLikeSections(text) {
   const sections = [];
   let current = { title: "Synthesis", content: [] };
 
-  for (const line of lines) {
-    const headingMatch = line.match(/^#{1,4}\s+(.+)$/) || line.match(/^\d+\.\s+(.+)$/);
-    if (headingMatch) {
-      if (current.content.length > 0) sections.push(current);
-      current = { title: normalizeSectionTitle(headingMatch[1].trim()), content: [] };
-    } else if (line.trim()) {
-      current.content.push(line.trim());
+  const flushCurrent = () => {
+    const content = current.content.join("\n").trim();
+    if (content || DEFAULT_SECTIONS.includes(normalizeSectionTitle(current.title))) {
+      sections.push({ title: normalizeSectionTitle(current.title), content });
     }
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+
+    if (!line) {
+      if (current.content.length > 0 && current.content[current.content.length - 1] !== "") {
+        current.content.push("");
+      }
+      continue;
+    }
+
+    const heading = extractKnownSectionHeading(line);
+
+    if (heading) {
+      flushCurrent();
+      current = { title: heading.title, content: [] };
+      if (heading.inlineContent) current.content.push(heading.inlineContent);
+      continue;
+    }
+
+    current.content.push(line);
   }
 
-  if (current.content.length > 0) sections.push(current);
+  flushCurrent();
 
-  if (sections.length === 0) {
+  const meaningfulSections = sections.filter((section) => section.content || section.title !== "Synthesis");
+  if (meaningfulSections.length === 0) {
     return text ? [{ title: "Synthesis", content: text }] : [];
   }
 
-  return sections.map((section) => ({ ...section, content: section.content.join("\n") }));
+  return meaningfulSections;
+}
+
+function extractKnownSectionHeading(line) {
+  if (!line) return null;
+
+  let normalizedLine = line
+    .replace(/^#{1,6}\s*/, "")
+    .replace(/\s*#{1,6}$/, "")
+    .trim();
+
+  const boldHeading = normalizedLine.match(/^\*\*(.+?)\*\*:?[ \t]*(.*)$/);
+  if (boldHeading) {
+    const boldTitle = boldHeading[1].replace(/[:\-–]\s*$/, "").trim();
+    normalizedLine = `${boldTitle}${boldHeading[2] ? `: ${boldHeading[2]}` : ""}`.trim();
+  }
+
+  const match = normalizedLine.match(
+    /^(?:\d+[.)]\s*)?(?:\*\*)?\s*(what(?:'|’)s been studied|what has been studied|gap report|recommended methods(?:\s*&\s*|\s+and\s+|\s+)tools)\s*(?:\*\*)?\s*[:\-–]?\s*(.*)$/i
+  );
+
+  if (!match) return null;
+
+  const title = normalizeSectionTitle(match[1]);
+  if (!DEFAULT_SECTIONS.includes(title)) return null;
+
+  return {
+    title,
+    inlineContent: String(match[2] || "").trim()
+  };
 }
 
 function normalizeSectionTitle(title) {
@@ -567,15 +641,42 @@ function normalizeContentBlocks(content) {
     return [content.map((item) => (typeof item === "string" ? item : JSON.stringify(item)))];
   }
 
-  return String(content)
-    .split(/\n{2,}/)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((block) => {
-      const lines = block.split(/\n/).map((line) => line.trim()).filter(Boolean);
-      const isList = lines.length > 1 && lines.every((line) => /^[-*]\s+/.test(line));
-      return isList ? lines.map((line) => line.replace(/^[-*]\s+/, "")) : lines.join(" ");
-    });
+  const blocks = [];
+  for (const segment of String(content).split(/\n{2,}/)) {
+    const lines = segment.split(/\n/).map((line) => line.trim()).filter(Boolean);
+    let textLines = [];
+    let listItems = [];
+
+    const flushText = () => {
+      if (textLines.length > 0) {
+        blocks.push(textLines.join(" "));
+        textLines = [];
+      }
+    };
+
+    const flushList = () => {
+      if (listItems.length > 0) {
+        blocks.push([...listItems]);
+        listItems = [];
+      }
+    };
+
+    for (const line of lines) {
+      const listMatch = line.match(/^(?:[-*]|\d+[.)])\s+(.+)$/);
+      if (listMatch) {
+        flushText();
+        listItems.push(listMatch[1]);
+      } else {
+        flushList();
+        textLines.push(line);
+      }
+    }
+
+    flushText();
+    flushList();
+  }
+
+  return blocks;
 }
 
 function normalizeSources(sources) {
@@ -616,25 +717,38 @@ function normalizeSources(sources) {
 }
 
 function renderWithCitations(text, sources, message, onCitationClick) {
-  const parts = String(text || "").split(/(\[\d+\])/g);
+  const parts = String(text || "").split(/(\[(?:\d+\s*(?:,\s*\d+\s*)*)\])/g);
 
   return parts.map((part, index) => {
-    const match = part.match(/^\[(\d+)\]$/);
+    const match = part.match(/^\[((?:\d+\s*(?:,\s*\d+\s*)*))\]$/);
     if (!match) return <span key={`${part}-${index}`}>{part}</span>;
 
-    const citationNumber = Number(match[1]);
-    const valid = citationNumber >= 1 && citationNumber <= (sources?.length || 0);
+    const citationNumbers = match[1]
+      .split(",")
+      .map((value) => Number(value.trim()))
+      .filter((value) => Number.isInteger(value));
+
     return (
-      <button
-        key={`${part}-${index}`}
-        type="button"
-        className={`citation-chip${valid ? "" : " disabled"}`}
-        onClick={() => valid && onCitationClick?.(citationNumber, sources, message)}
-        aria-label={valid ? `Open cited study ${citationNumber}` : `Citation ${citationNumber} was not returned as a source`}
-        disabled={!valid}
-      >
-        {part}
-      </button>
+      <span key={`${part}-${index}`} className="citation-group">
+        {citationNumbers.map((citationNumber, citationIndex) => {
+          const valid = citationNumber >= 1 && citationNumber <= (sources?.length || 0);
+          return (
+            <button
+              key={`${part}-${citationNumber}-${citationIndex}`}
+              type="button"
+              className={`citation-chip${valid ? "" : " disabled"}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (valid) onCitationClick?.(citationNumber, sources, message);
+              }}
+              aria-label={valid ? `Open cited study ${citationNumber}` : `Citation ${citationNumber} was not returned as a source`}
+              disabled={!valid}
+            >
+              [{citationNumber}]
+            </button>
+          );
+        })}
+      </span>
     );
   });
 }

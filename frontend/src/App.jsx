@@ -63,6 +63,7 @@ export default function App() {
             setSession={setBrainSession}
             onBrainResult={handleBrainResult}
             onBrainClear={handleBrainClear}
+            onOpenReports={() => setTab("Reports")}
           />
         )}
         {tab === "Catalog" && <Catalog brainContext={brainContext} />}

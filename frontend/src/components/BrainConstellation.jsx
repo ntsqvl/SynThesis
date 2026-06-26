@@ -169,6 +169,8 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
               height={Math.max(size.height, 420)}
               backgroundColor="rgba(0,0,0,0)"
               cooldownTicks={90}
+              d3VelocityDecay={0.32}
+              warmupTicks={60}
               nodeId="id"
               nodeLabel={(node) => nodeTooltip(node)}
               linkLabel={(link) => link.label || link.relationship || "related"}
@@ -184,11 +186,10 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
                 if (node.sourceIndex && onSourceSelect) onSourceSelect(node.sourceIndex);
               }}
               nodeCanvasObject={(node, ctx, globalScale) => drawNode(node, ctx, globalScale, selectedNode, activeNodeId)}
+              nodePointerAreaPaint={(node, color, ctx) => paintPointerArea(node, color, ctx)}
             />
           )}
-          {String(query || "").trim() && graphData.nodes.length > 0 && (
-            <div className="query-overlay-label">Query overlay: {String(query).trim()}</div>
-          )}
+
         </div>
 
         {!compact && (
@@ -266,45 +267,59 @@ function drawNode(node, ctx, globalScale, selectedNode, activeNodeId) {
   const isSelected = selectedNode && String(selectedNode.id) === String(node.id);
   const isActiveSource = activeNodeId && String(activeNodeId) === String(node.id);
   const isLit = Boolean(node.queryHighlighted || node.sourceHighlighted || isSelected || isActiveSource);
+  const isCluster = type === "topic";
 
   ctx.save();
 
+  if (isLit || isCluster) {
+    const halo = ctx.createRadialGradient(node.x, node.y, radius, node.x, node.y, radius + (isLit ? 24 : 16));
+    halo.addColorStop(0, isLit ? "rgba(255, 191, 0, 0.28)" : "rgba(6, 214, 160, 0.12)");
+    halo.addColorStop(1, "rgba(255, 255, 255, 0)");
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius + (isLit ? 24 : 16), 0, 2 * Math.PI, false);
+    ctx.fillStyle = halo;
+    ctx.fill();
+  }
+
   if (isLit) {
     ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + 14, 0, 2 * Math.PI, false);
-    ctx.fillStyle = "rgba(255, 191, 0, 0.11)";
-    ctx.fill();
-
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + 7, 0, 2 * Math.PI, false);
-    ctx.fillStyle = "rgba(255, 191, 0, 0.18)";
-    ctx.fill();
+    ctx.arc(node.x, node.y, radius + 9, 0, 2 * Math.PI, false);
+    ctx.strokeStyle = "rgba(255, 191, 0, 0.68)";
+    ctx.lineWidth = 2.2 / Math.max(globalScale, 0.8);
+    ctx.stroke();
   }
 
   ctx.beginPath();
   ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
   ctx.fillStyle = color;
-  ctx.shadowBlur = isLit ? 18 : 0;
-  ctx.shadowColor = isLit ? "rgba(255, 191, 0, 0.75)" : "transparent";
+  ctx.shadowBlur = isLit ? 20 : 9;
+  ctx.shadowColor = isLit ? "rgba(255, 191, 0, 0.72)" : "rgba(36, 41, 47, 0.16)";
   ctx.fill();
   ctx.shadowBlur = 0;
 
-  ctx.lineWidth = isLit ? 2.6 : 1.25;
-  ctx.strokeStyle = isLit ? "#B8860B" : "#ffffff";
+  ctx.lineWidth = isLit ? 2.8 : 1.35;
+  ctx.strokeStyle = isLit ? "#B8860B" : "rgba(255,255,255,0.95)";
   ctx.stroke();
 
-  const label = node.label || node.title || node.name;
-  const shouldLabel = isLit || type !== "thesis" || globalScale > 1.45;
-  if (label && shouldLabel) {
-    const fontSize = Math.max(10, 12 / globalScale);
-    ctx.font = `${fontSize}px Inter, system-ui, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    ctx.fillStyle = isLit ? "rgba(36, 41, 47, 0.96)" : "rgba(36, 41, 47, 0.76)";
-    ctx.fillText(String(label).slice(0, 38), node.x, node.y + radius + 5);
+  if (node.sourceIndex) {
+    ctx.beginPath();
+    ctx.arc(node.x + radius * 0.58, node.y - radius * 0.58, Math.max(2.2, radius * 0.28), 0, 2 * Math.PI, false);
+    ctx.fillStyle = "#ffffff";
+    ctx.fill();
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = "rgba(255, 191, 0, 0.85)";
+    ctx.stroke();
   }
 
   ctx.restore();
+}
+
+function paintPointerArea(node, color, ctx) {
+  if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, nodeRadius(node) + 10, 0, 2 * Math.PI, false);
+  ctx.fill();
 }
 
 function nodeRadius(node) {

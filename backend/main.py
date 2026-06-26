@@ -277,7 +277,13 @@ def build_adviser_ranking(results: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def extract_citation_numbers(answer: str) -> set[int]:
-    return {int(match) for match in re.findall(r"\[(\d+)\]", answer or "")}
+    citation_numbers: set[int] = set()
+    for block in re.findall(r"\[([0-9,\s]+)\]", answer or ""):
+        for raw_number in block.split(","):
+            raw_number = raw_number.strip()
+            if raw_number.isdigit():
+                citation_numbers.add(int(raw_number))
+    return citation_numbers
 
 
 def compute_repository_confidence(query: str, answer: str, results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -401,12 +407,10 @@ def brain(req: BrainRequest):
 
     context = "\n".join(
         f"[{index}] {record_kind(record)} | [{record.get('year') or 'n/d'}] "
-        f"\"{record.get('title', 'Untitled record')}\" by {record.get('author', 'Unknown author')}\n"
-        f"  {supervisor_label(record)}\n"
-        f"  Domain: {record.get('domain') or 'Unspecified'}\n"
-        f"  Methods/Tools: {', '.join(as_list(record.get('methodology'))) or 'Not specified'}\n"
-        f"  Datasets: {', '.join(as_list(record.get('datasets'))) or 'Not specified'}\n"
-        f"  Abstract: {str(record.get('abstract') or '')[:650]}"
+        f"\"{record.get('title', 'Untitled record')}\" by {record.get('author', 'Unknown author')} "
+        f"| {supervisor_label(record)} | Domain: {record.get('domain') or 'Unspecified'} "
+        f"| Methods/Tools: {', '.join(as_list(record.get('methodology'))) or 'Not specified'} "
+        f"| Abstract: {str(record.get('abstract') or '')[:650]}"
         for index, record in enumerate(results, start=1)
     )
 
@@ -417,6 +421,8 @@ STRICT RULE: Base every claim, study reference, finding, and suggestion SOLELY o
 CITATION RULE: When referencing a thesis or faculty research record, cite it inline using its bracketed source number, for example [1] or [2]. Do not cite studies that are not in the repository context.
 
 RESPONSE BEHAVIOR:
+- Keep every relevant cited detail in the section where it belongs. Do not move numbered study lists into extra sections.
+- Use bullet lists under each section when multiple repository records are relevant so the UI can display all cited studies cleanly.
 - If this is the first question, structure your response with exactly these three sections:
 
   ## What's Been Studied
@@ -445,7 +451,7 @@ RESPONSE BEHAVIOR:
         response = get_oai().chat.completions.create(
             model=CHAT_MODEL,
             messages=messages,
-            max_tokens=800,
+            max_tokens=1200,
         )
         answer = response.choices[0].message.content
     except Exception as exc:
