@@ -19,6 +19,7 @@ const EMPTY_BRAIN_SESSION = {
 const EMPTY_BRAIN_CONTEXT = {
   query: "",
   sources: [],
+  citedSourceIds: [],
   adviserRanking: [],
   confidence: null,
   repositoryConfidence: null,
@@ -42,6 +43,7 @@ export default function App() {
     setBrainContext({
       query: nextContext.query || "",
       sources: Array.isArray(nextContext.sources) ? nextContext.sources : [],
+      citedSourceIds: Array.isArray(nextContext.citedSourceIds) ? nextContext.citedSourceIds : [],
       adviserRanking: Array.isArray(nextContext.adviserRanking) ? nextContext.adviserRanking : [],
       confidence: nextContext.confidence ?? null,
       repositoryConfidence: nextContext.repositoryConfidence ?? null,

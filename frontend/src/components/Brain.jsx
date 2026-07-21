@@ -105,6 +105,7 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
       onBrainResult?.({
         query: cleanQuery,
         sources: normalized.sources,
+        citedSourceIds: citedSourceIds(answerText, normalized.sources),
         adviserRanking,
         confidence: normalized.confidence,
         repositoryConfidence: normalized.repositoryConfidence
@@ -756,6 +757,16 @@ function renderWithCitations(text, sources, message, onCitationClick) {
       </span>
     );
   });
+}
+
+function citedSourceIds(answer, sources) {
+  if (!Array.isArray(sources)) return [];
+
+  const citationNumbers = [...String(answer || "").matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)]
+    .flatMap((match) => match[1].split(",").map((value) => Number(value.trim())))
+    .filter((number) => Number.isInteger(number) && number >= 1 && number <= sources.length);
+
+  return [...new Set(citationNumbers.map((number) => sources[number - 1]?.id).filter(Boolean))];
 }
 
 function normalizeAdviserRanking(items) {

@@ -18,7 +18,15 @@ export default function Catalog({ brainContext = {} }) {
 
   const brainQuery = String(brainContext?.query || "").trim();
   const hasBrainSearch = Boolean(brainQuery);
-  const relatedCatalog = useMemo(() => normalizeCatalogPayload({ theses: brainContext?.sources || [] }), [brainContext?.sources]);
+  const citedSourceIds = useMemo(
+    () => new Set((Array.isArray(brainContext?.citedSourceIds) ? brainContext.citedSourceIds : []).map(String)),
+    [brainContext?.citedSourceIds]
+  );
+  const relatedSources = useMemo(
+    () => (Array.isArray(brainContext?.sources) ? brainContext.sources : []).filter((source) => citedSourceIds.has(String(source?.id))),
+    [brainContext?.sources, citedSourceIds]
+  );
+  const relatedCatalog = useMemo(() => normalizeCatalogPayload({ theses: relatedSources }), [relatedSources]);
   const repositoryCatalog = useMemo(() => normalizeCatalogPayload(repositoryPayload), [repositoryPayload]);
   const isRepositoryView = viewMode === "all";
 
@@ -196,13 +204,13 @@ export default function Catalog({ brainContext = {} }) {
           ) : (
             <CatalogResults
               title="Brain-related study index"
-              description="These are the theses and faculty research records returned for the latest Brain conversation."
+              description="These are the theses and faculty research records explicitly cited in the latest Brain answer."
               badge={`${relatedCatalog.items.length} related records`}
               items={visibleItems}
               totalItems={activeItems.length}
               currentPage={currentPage}
               totalPages={totalPages}
-              emptyMessage="No related records match the current filters."
+              emptyMessage={citedSourceIds.size === 0 ? "The latest Brain answer did not cite a repository study." : "No cited records match the current filters."}
               onPageChange={setCurrentPage}
               onSelect={setSelectedStudy}
             />
