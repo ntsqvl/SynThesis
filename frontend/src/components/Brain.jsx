@@ -411,7 +411,7 @@ function StudyDetail({ citation, onBack }) {
   const keywords = toArray(source.keywords || source.tags || source.topics);
   const datasets = toArray(source.datasets || source.dataset);
   const people = source.proponentsText || peopleText(source.proponents) || source.author || source.authors || "";
-  const adviser = source.supervisorLabel || source.adviser || source.advisor || source.mentor || source.adviser_or_faculty || "";
+  const adviser = source.mentor || source.adviser || "";
   const typeLabel = formatRecordType(source.recordKind || source.record_kind || source.recordType || source.type || "Repository record");
 
   return (
@@ -698,7 +698,7 @@ function normalizeSources(sources) {
       author: proponents.text || thesis.author || thesis.authors || thesis.student || "",
       proponents: proponents.list,
       proponentsText: thesis.proponents_text || proponents.text,
-      adviser: thesis.adviser || thesis.advisor || thesis.mentor || thesis.adviser_or_faculty || (thesis.type === "faculty_paper" ? firstAuthor(thesis.author) : ""),
+      adviser: thesis.mentor || thesis.adviser || thesis.advisor || "",
       supervisorLabel: thesis.supervisor_label || supervisorLabel(thesis),
       domain: thesis.domain || thesis.category || thesis.cluster || "",
       year: thesis.year || thesis.publication_year || thesis.school_year || "",

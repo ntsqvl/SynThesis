@@ -224,7 +224,7 @@ function normalizeCatalogItem(item, index) {
     author: proponents.text || item.author || item.authors || item.student || "",
     proponents: proponents.list,
     proponentsText: proponents.text,
-    adviser: item.supervisorLabel || item.supervisor_label || item.adviser || item.advisor || item.mentor || item.adviser_or_faculty || (item.type === "faculty_paper" ? firstAuthor(item.author) : ""),
+    adviser: item.mentor || item.adviser || item.advisor || "",
     domain: item.domain || item.category || item.cluster || "",
     year: item.year || item.publication_year || item.school_year || "",
     abstract: item.abstract || item.summary || item.description || "",

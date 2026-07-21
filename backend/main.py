@@ -175,9 +175,12 @@ def public_record(record: dict[str, Any]) -> dict[str, Any]:
     enriched["record_kind"] = record_kind(record)
     enriched["proponents"] = proponents
     enriched["proponents_text"] = record.get("proponents_text") or record.get("proponents_display") or ", ".join(proponents)
-    enriched["adviser"] = record.get("adviser") or record.get("mentor") or (first_author(record.get("author")) if record.get("type") == "faculty_paper" else None)
-    enriched["adviser_or_faculty"] = supervisor_name(record)
-    enriched["supervisor_label"] = supervisor_label(record)
+    # Adviser/faculty always reflects the mentor. Faculty papers have no mentor,
+    # so these stay empty and the UI hides the field rather than showing an author.
+    mentor = record.get("mentor") or record.get("adviser")
+    enriched["adviser"] = mentor
+    enriched["adviser_or_faculty"] = mentor or ""
+    enriched["supervisor_label"] = f"Adviser: {mentor}" if mentor else ""
     enriched["repository_verified"] = str(record.get("id")) in REPOSITORY_IDS
     return enriched
 
@@ -597,7 +600,7 @@ def knowledge_map(query: str = Query(default="")):
                 "proponents_text": ", ".join(proponent_names(record)),
                 "proponents": proponent_names(record),
                 "mentor": record.get("mentor"),
-                "adviser": record.get("adviser") or record.get("mentor") or first_author(record.get("author")),
+                "adviser": record.get("mentor") or record.get("adviser"),
                 "methodology": record.get("methodology", []),
                 "keywords": record.get("keywords", []),
                 "datasets": record.get("datasets", []),
