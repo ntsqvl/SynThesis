@@ -1,6 +1,16 @@
 # SynThesis — Backend Guide
 > 24-hour build · Tabs in scope: **Brain**, **Catalog**, **Map**, **Reports**
 
+> ⚠️ **Outdated: Qdrant has been removed.** This guide describes the original
+> Qdrant + Docker + `ingest.py` design. That has been replaced by a local,
+> file-based embedding index built by `backend/build_index.py` and searched
+> in-memory with cosine similarity in `backend/main.py`. There is no vector
+> database, Docker container, or `ingest.py` anymore. For the current data and
+> indexing workflow, see
+> [`synthesis-data-and-indexing-handoff.md`](synthesis-data-and-indexing-handoff.md)
+> and the project `README copy.md`. The sections below are kept for historical
+> reference only.
+
 ---
 
 ## Architecture at a Glance
@@ -11,17 +21,16 @@ React Frontend (Vite)
         ▼
   FastAPI  :8000
         │
-   ┌────┴────────┐
-   │             │
-Qdrant        theses.json
-(vector DB)   (flat-file DB)
-  :6333
+   ┌────┴──────────────┐
+   │                   │
+embeddings.json   synthesis_research_data.json
+(local vectors)   (flat-file DB)
 ```
 
 **Why this stack for a hackathon:**
 - FastAPI spins up in seconds, auto-docs at `/docs`
-- Qdrant runs in one `docker run` command, no account needed
-- `theses.json` is your "database" — no ORM, no migrations, no setup
+- `embeddings.json` is a prebuilt local vector index — no database, no Docker, no account needed
+- `synthesis_research_data.json` is your "database" — no ORM, no migrations, no setup
 - OpenAI SDK does embeddings + GPT-4o in ~15 lines
 
 ---

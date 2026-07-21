@@ -495,7 +495,7 @@ Strictly follow this — a working Brain tab at hour 9 is better than a half-fin
 | Window | Task |
 |---|---|
 | **0–2 hrs** | Generate `theses.json` with 20+ records, 3+ domains |
-| **2–4 hrs** | Backend: setup → `ingest.py` → verify Qdrant → all 4 routes working |
+| **2–4 hrs** | Backend: setup → `build_index.py` → verify local embedding index → all 4 routes working |
 | **4–5 hrs** | Frontend: Vite scaffold, `index.css`, `App.jsx`, `Sidebar.jsx`, `api/index.js` |
 | **5–8 hrs** | **Brain tab** — search bar, GPT output, source cards, loading states |
 | **8–10 hrs** | **Catalog tab** — table, filters, empty states |

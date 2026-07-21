@@ -1,4 +1,5 @@
 import json
+import math
 import os
 import re
 from collections import Counter, defaultdict
@@ -11,13 +12,12 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel, Field
-from qdrant_client import QdrantClient
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
 DATA_PATH = BASE_DIR / "data" / "synthesis_research_data.json"
-COLLECTION = os.getenv("QDRANT_COLLECTION", "theses")
+EMBEDDINGS_PATH = BASE_DIR / "data" / "embeddings.json"
 EMBED_MODEL = os.getenv("SYNTHESIS_EMBED_MODEL") or os.getenv("EMBED_MODEL", "text-embedding-3-small")
 CHAT_MODEL = os.getenv("SYNTHESIS_CHAT_MODEL") or os.getenv("CHAT_MODEL", "gpt-4o")
 
@@ -29,15 +29,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-qdrant = QdrantClient(
-    host=os.getenv("QDRANT_HOST", "localhost"),
-    port=int(os.getenv("QDRANT_PORT", "6333")),
-)
-
 with DATA_PATH.open(encoding="utf-8") as f:
     ALL_THESES: list[dict[str, Any]] = json.load(f)
 
 REPOSITORY_IDS = {str(record.get("id")) for record in ALL_THESES if record.get("id")}
+
+
+# -- local embedding index -------------------------------------------------
+
+def load_embedding_index() -> tuple[list[tuple[dict[str, Any], list[float]]], str | None]:
+    """Load the locally built vector index produced by build_index.py.
+
+    Returns a list pairing each research record with its stored embedding, plus
+    the model the vectors were built with. Records whose id has no vector (or an
+    index that is missing/corrupt) are simply skipped; semantic_search falls
+    back to keyword search when the index is empty.
+    """
+    if not EMBEDDINGS_PATH.exists():
+        return [], None
+    try:
+        index = json.loads(EMBEDDINGS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return [], None
+    if not isinstance(index, dict):
+        return [], None
+
+    vectors_by_id: dict[str, list[float]] = {}
+    for item in index.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        record_id = str(item.get("id") or "")
+        embedding = item.get("embedding")
+        if record_id and isinstance(embedding, list) and embedding:
+            vectors_by_id[record_id] = [float(value) for value in embedding]
+
+    paired: list[tuple[dict[str, Any], list[float]]] = []
+    for record in ALL_THESES:
+        vector = vectors_by_id.get(str(record.get("id")))
+        if vector is not None:
+            paired.append((record, vector))
+    return paired, index.get("embedding_model")
+
+
+EMBEDDING_INDEX, INDEX_EMBED_MODEL = load_embedding_index()
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    if len(a) != len(b):
+        return 0.0
+    dot = norm_a = norm_b = 0.0
+    for value_a, value_b in zip(a, b):
+        dot += value_a * value_b
+        norm_a += value_a * value_a
+        norm_b += value_b * value_b
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
 
 
 # -- clients ---------------------------------------------------------------
@@ -174,7 +221,7 @@ def record_matches_query(record: dict[str, Any], terms: list[str]) -> bool:
 
 
 def keyword_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
-    """Local fallback if Qdrant or embeddings are unavailable."""
+    """Local fallback used when the embedding index or AI key is unavailable."""
     q = query.strip().lower()
     if not q:
         return ALL_THESES[:top_k]
@@ -215,28 +262,28 @@ def keyword_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
 
 
 def semantic_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
-    """Qdrant vector search with a JSON-safe keyword fallback."""
+    """Local embedding search over embeddings.json with a keyword fallback.
+
+    The query is embedded with the same model the index was built with, then
+    ranked against the pre-computed record vectors by cosine similarity. If the
+    index is empty or embedding fails (for example, no AI key configured), it
+    falls back to the JSON-safe keyword search so the endpoint still responds.
+    """
     limit = max(1, min(int(top_k or 8), 30))
+    if not EMBEDDING_INDEX:
+        return keyword_search(query, limit)
     try:
         vector = embed(query)
-        try:
-            hits = qdrant.query_points(
-                collection_name=COLLECTION,
-                query=vector,
-                limit=limit,
-                with_payload=True,
-            ).points
-        except AttributeError:
-            hits = qdrant.search(
-                collection_name=COLLECTION,
-                query_vector=vector,
-                limit=limit,
-                with_payload=True,
-            )
-        payloads = [hit.payload for hit in hits if hit.payload]
-        return payloads or keyword_search(query, limit)
     except Exception:
         return keyword_search(query, limit)
+
+    scored = sorted(
+        ((cosine_similarity(vector, record_vector), record) for record, record_vector in EMBEDDING_INDEX),
+        key=lambda item: item[0],
+        reverse=True,
+    )
+    ranked = [record for score, record in scored[:limit] if score > 0.0]
+    return ranked or keyword_search(query, limit)
 
 
 def build_adviser_ranking(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -393,10 +440,19 @@ def root():
 
 @app.get("/api/health")
 def health():
+    index_ready = bool(EMBEDDING_INDEX)
+    model_matches = (not index_ready) or (INDEX_EMBED_MODEL == EMBED_MODEL)
     return {
         "status": "ok",
         "records": len(ALL_THESES),
         "domains": sorted({record.get("domain") for record in ALL_THESES if record.get("domain")}),
+        "search": {
+            "mode": "local_embeddings" if index_ready else "keyword_fallback",
+            "indexed_records": len(EMBEDDING_INDEX),
+            "index_model": INDEX_EMBED_MODEL,
+            "query_model": EMBED_MODEL,
+            "model_match": model_matches,
+        },
     }
 
 
