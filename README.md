@@ -1,137 +1,111 @@
-# SynThesis Connected Build
+# SynThesis: GPT-5.6 and Codex collaboration record
 
-This package connects the React/Vite frontend to the Python FastAPI backend.
+## Inspiration and purpose
 
-## What is connected
+SynThesis was inspired by a common student problem: choosing a thesis topic, finding related studies, and identifying a suitable mentor can be difficult when valuable research is stored in static or archived files. Although previous thesis and faculty research may already exist, it is often difficult to search, compare, and use when making research decisions.
 
-Frontend API calls in `frontend/src/api/index.js` now point to the real backend routes:
+SynThesis turns those archived records into a repository-grounded research assistant. The application combines a React/Vite frontend, a FastAPI backend, local embedding retrieval, cited Brain responses, a searchable Catalog, methodology and adviser reports, and an interactive research constellation. Its aim is to help students discover patterns, gaps, and possible thesis directions from the institution's available research records.
 
-- `POST /api/brain`
-- `GET /api/catalog`
-- `GET /api/map`
-- `GET /api/reports`
-- `GET /api/health`
+This document records how GPT-5.6, used through Codex, helped the team improve the project. It is a development record, not a claim that GPT-5.6 independently designed, approved, or deployed the application.
 
-The backend returns JSON for all app routes. The frontend normalizes the backend's current record fields, including `mentor`, `proponents`, `faculty_paper`, `methodology`, `datasets`, `edges`, `links`, `adviser_recommendations`, and `methodology_breakdown`.
+## What SynThesis does
 
-## Important setup note
+Users can explore thesis and faculty-research records by topic. Rather than relying only on exact keyword matches, the system retrieves semantically related studies and uses the retrieved archive context to provide structured research guidance, including:
 
-Do not commit real API keys. This package includes `backend/.env.example`; copy it to `backend/.env` and add your own key there.
+- what relevant repository studies have already explored;
+- possible gaps or underrepresented angles in the retrieved records;
+- applicable methods, tools, and datasets; and
+- related thesis records, faculty or adviser recommendations, methodology reports, and a knowledge map of research domains and connections.
 
-## 1. Install required software
+## GPT-5.6's role in the project
 
-Install these first:
+GPT-5.6 supported the team through Codex as an engineering and documentation assistant. It helped inspect existing code, trace data flows, translate confirmed requirements into focused changes, diagnose defects, review implementation details, and run or interpret verification checks. It did not determine the research corpus, make product decisions, control credentials, or release changes without human review.
 
-- Python 3.10 or newer
-- Node.js LTS, which includes `npm`
+### Development assistance versus application runtime
 
-If Windows says `npm is not recognized`, install Node.js LTS and reopen Command Prompt, PowerShell, or VS Code.
+Two related but distinct uses should not be conflated:
 
-Semantic search runs on a local embedding index (`backend/data/embeddings.json`).
-There is no vector database or Docker container to run.
+- **Development work:** GPT-5.6, through Codex, assisted with analysis, implementation, debugging, verification, and documentation.
+- **Active Brain workflow:** The current frontend uses `POST /api/brain`. Its model is configured through `SYNTHESIS_CHAT_MODEL`; the checked-in `.env.example` uses `gpt-5.6-sol`. That endpoint retrieves repository records, requests structured JSON, validates citations, and returns a deterministic fallback if the model call fails.
 
-## 2. Set up the backend
+## Technical approach and safeguards
 
-Open a terminal:
+The backend loads a structured JSON corpus and builds searchable text from research fields such as title, abstract, domain, adviser, proponents, keywords, methodology, and datasets. It uses `text-embedding-3-small` to create vector representations for the records and user query, then compares them using local in-memory cosine similarity to retrieve relevant research.
 
-```bash
-cd backend
-python -m venv venv
-```
+The retrieved records become the model context for a repository-grounded response. The prompts instruct the model to make claims only from that context and to cite the matching source numbers. The backend also calculates repository confidence from deterministic signals, including citation validity and query fit, rather than treating the model's wording as evidence.
 
-On Windows:
+The system remains usable when external AI services or index data are unavailable. Keyword ranking provides a retrieval fallback when semantic search cannot run, and the response layer returns a contract-valid fallback that directs users to the retrieved records for manual review. This resilience, together with consistent data fields for advisers, proponents, methodologies, domains, and related records, helps the application produce useful and inspectable results under partial failure.
 
-```bash
-venv\Scripts\activate
-```
+## Project improvements supported by Codex
 
-On macOS/Linux:
+### 1. Repository constellation interaction and stability
 
-```bash
-source venv/bin/activate
-```
+The team reported that highlighted constellation nodes could not consistently be hovered or opened. Codex traced the active `SynthesisPage` to `BrainConstellation` data flow, reproduced the interaction against the local application, and supported targeted improvements to the interaction layer:
 
-Install dependencies:
+- preserved the selected repository record when a connected study is clicked, including studies not cited in the current answer;
+- enlarged the invisible pointer target for connected-study nodes;
+- removed a recursive zoom-end recentering path that caused browser stack-overflow errors; and
+- guarded the resize observer when the graph container is detached.
 
-```bash
-pip install -r requirements.txt
-```
+The resulting map shows a study preview on hover and opens the full repository-record panel on click.
 
-Create your environment file:
+### 2. Catalog browsing and record review
 
-```bash
-copy .env.example .env
-```
+The team wanted users to browse the complete repository without first submitting a Brain query, while retaining a separate view for studies cited by the latest Brain response. Codex examined the existing frontend state and API conventions, then supported a frontend-focused implementation that:
 
-On macOS/Linux:
+- reuses `GET /api/catalog` for full-repository browsing, with debounced search and domain/year filters;
+- retains **Brain-related** as the default view and limits it to source IDs cited in the latest Brain answer;
+- paginates the catalog at five records per page and wraps fixed-width columns to avoid horizontal scrolling;
+- opens a focused record-detail view with the complete abstract and available metadata; and
+- aligns the Catalog detail hierarchy with the established Brain study-detail design.
 
-```bash
-cp .env.example .env
-```
+The human team set the interaction expectations, including title-based detail navigation, visible tags, the back action, and the decision not to add a Tools column to the Catalog table.
 
-Edit `.env` and add your `AIMLAPI_KEY` or `OPENAI_API_KEY`.
+### 3. Build, deployment, and documentation readiness
 
-Build the local embedding index (only needed the first time, or after editing
-`data/synthesis_research_data.json`):
+Codex helped convert the local two-service setup into documentation that reflects the active codebase rather than retired prototype assumptions. The work covered:
 
-```bash
-python build_index.py
-```
+- the public API base URL and `VITE_API_BASE` build-time behavior;
+- CORS origins, the `/api/health` deployment check, and the static frontend build;
+- the corpus, embedding index, and manifest files required by the backend; and
+- embedding-index maintenance after corpus or embedding-model changes.
 
-The repository already ships a prebuilt `data/embeddings.json`, so you can skip
-this step unless you changed the research data. See
-`docs/synthesis-data-and-indexing-handoff.md` for details.
+The current documentation explains that normal operation uses local JSON records and a prebuilt embedding index; it does not require Qdrant, Docker, or a separate vector database.
 
-Start FastAPI:
+## Human decisions and controls
 
-```bash
-python -m uvicorn main:app --reload --port 8000
-```
+The team retained ownership of all product and release decisions. Human contributors:
 
-Check the backend:
+- defined the repository-grounded research-assistant goal and selected the research corpus;
+- chose the Brain, Catalog, and Reports experience, including constellation and Catalog interactions;
+- reported observed interface behavior and reviewed each proposed change;
+- controlled API keys, `.env` files, Git actions, deployment settings, and external-service access;
+- confirmed deployment health and the frontend-to-backend configuration; and
+- approved the documentation scope, release readiness, and user-facing behavior.
 
-```text
-http://localhost:8000/api/health
-```
+These controls make the work human-reviewed engineering, rather than unattended model output.
 
-## 3. Set up the frontend
+## Validation performed
 
-Open a second terminal:
+The implementation sessions used the following checks before handoff:
 
-```bash
-cd frontend
-npm install
-npm run dev
-```
+1. Reproduced reported issues against a local frontend and FastAPI backend.
+2. Submitted real Brain queries and confirmed that repository sources, citations, and constellation connections were returned.
+3. Verified constellation hover previews and connected-study detail selection.
+4. Inspected the browser console and confirmed the recursive zoom stack-overflow path was removed.
+5. Exercised both Catalog modes, filtering, pagination, and return-to-catalog behavior.
+6. Ran `npm.cmd run build` after implementation groups to verify the production frontend bundle.
+7. Checked the backend health endpoint and reviewed the public frontend URL, backend URL, CORS origin, and deployment environment variables.
+8. Reviewed changed files to keep credentials, corpus data, and unrelated work outside the intended scope.
 
-Open:
+## Responsible-use boundaries
 
-```text
-http://localhost:5173
-```
+- The repository remains the source of truth. The application grounds synthesis in retrieved records and presents citations for inspection.
+- Model-generated prose requires review against the visible repository sources; it does not replace academic validation.
+- Confidence is repository-support metadata, not a statement that a generated claim is academically verified or complete.
+- Credentials remain server-side. The static frontend receives only the public backend URL.
+- Maintainers remain responsible for corpus quality, privacy, deployment security, availability, cost control, and final acceptance.
 
-## Windows helper scripts
+## Result
 
-From the project root, you can also run:
-
-```bat
-start-backend.bat
-start-frontend.bat
-```
-
-The prebuilt `backend/data/embeddings.json` is used automatically. Only run
-`python backend\build_index.py` if you edit the research data and need to
-rebuild the index before the next Brain search.
-
-## Changes made for integration
-
-- Backend data paths now work even when the server is launched from the `backend` folder.
-- Backend accepts either `AIMLAPI_KEY` or `OPENAI_API_KEY`.
-- Semantic search now runs on a local, file-based embedding index (`data/embeddings.json`) using in-memory cosine similarity, replacing the previous Qdrant vector database. No Docker or external service is required.
-- Brain answers include bracketed citation numbers such as `[1]`, which the frontend renders as clickable citation chips.
-- Brain now accepts and returns `history`, so the frontend can send follow-up questions with context.
-- Reports now treats faculty paper authors as faculty recommendations and thesis `mentor` values as adviser recommendations.
-- The separate Map tab has been removed from the sidebar. Its constellation visualization now appears inside the Brain tab after a query.
-- Brain graph nodes and links highlight when the submitted keywords match titles, domains, authors/proponents, advisers, methods, tools, datasets, keywords, or abstracts.
-- Catalog now shows all paper proponents/authors in a dedicated column while keeping the main adviser/faculty column.
-- Catalog and Brain graph views display backend fields such as `mentor`, `proponents`, `methodology`, `datasets`, faculty papers, and nested node `data`.
+GPT-5.6 and Codex accelerated implementation, debugging, verification, and technical documentation for SynThesis. The delivered workflow remains repository-grounded, inspectable, and human-governed: the team supplied the research intent, made the product decisions, validated the behavior, and controlled the deployed system.
