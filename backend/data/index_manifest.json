@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "built_at": "2026-07-21T06:56:07.905076Z",
+  "source_data": {
+    "path": "synthesis_research_data.json",
+    "sha256": "699722ee7bebce86009822f2edb82a6b771a0085931e9b2af637f995e540110a",
+    "record_count": 27
+  },
+  "embedding_index": {
+    "path": "embeddings.json",
+    "sha256": "1f65a57811a8d1bb767357f859cdd479121306c7e18229d302bcf03ccd5628eb",
+    "embedding_model": "text-embedding-3-small",
+    "dimensions": 1536,
+    "retrieval_text_version": 1,
+    "reused_vector_count": 0,
+    "created_vector_count": 27
+  }
+}
