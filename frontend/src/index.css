@@ -666,6 +666,11 @@ h3 {
   border-radius: 999px;
 }
 
+.legend-dot.gap {
+  border: 2px dashed var(--node-gap);
+  box-shadow: 0 0 8px rgba(230, 149, 50, 0.34);
+}
+
 
 .graph-layout.brain-graph-layout {
   grid-template-columns: minmax(0, 1fr) 320px;
@@ -762,6 +767,21 @@ h3 {
 .brain-graph-stage {
   height: 520px;
   min-height: 420px;
+  border-color: rgba(190, 140, 88, 0.26);
+  background:
+    radial-gradient(circle at 50% 48%, rgba(255, 202, 123, 0.16), transparent 32%),
+    radial-gradient(circle at 18% 18%, rgba(157, 78, 221, 0.07), transparent 26%),
+    linear-gradient(180deg, #fffefa, #fbf7ef);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.8), 0 18px 52px rgba(89, 67, 41, 0.09);
+}
+
+.brain-graph-stage::before {
+  background-image:
+    linear-gradient(rgba(121, 105, 83, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(121, 105, 83, 0.055) 1px, transparent 1px),
+    radial-gradient(circle, rgba(185, 122, 61, 0.12) 1px, transparent 1px);
+  background-size: 36px 36px, 36px 36px, 18px 18px;
+  opacity: 0.58;
 }
 
 .brain-graph-detail {
