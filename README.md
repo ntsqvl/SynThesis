@@ -21,10 +21,6 @@ Users can explore thesis and faculty-research records by topic. Rather than rely
 
 GPT-5.6 supported the team through Codex as an engineering and documentation assistant. It helped inspect existing code, trace data flows, translate confirmed requirements into focused changes, diagnose defects, review implementation details, and run or interpret verification checks. It did not determine the research corpus, make product decisions, control credentials, or release changes without human review.
 
-### Development assistance versus application runtime
-
-Two related but distinct uses should not be conflated:
-
 - **Development work:** GPT-5.6, through Codex, assisted with analysis, implementation, debugging, verification, and documentation.
 - **Active Brain workflow:** The current frontend uses `POST /api/brain`. Its model is configured through `SYNTHESIS_CHAT_MODEL`; the checked-in `.env.example` uses `gpt-5.6-sol`. That endpoint retrieves repository records, requests structured JSON, validates citations, and returns a deterministic fallback if the model call fails.
 
