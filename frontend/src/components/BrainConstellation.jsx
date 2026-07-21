@@ -2,137 +2,45 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import { fetchMap } from "../api/index.js";
 
-const NODE_COLORS = {
-  thesis: "#9d4edd",
-  topic: "#06d6a0",
-  methodology: "#ef476f",
-  adviser: "#118ab2",
-  gap: "#ff9f1c",
-  tool: "#8338ec",
-  dataset: "#3a86ff"
-};
+const NEUTRAL_NODE = "rgba(132, 145, 160, 0.62)";
+const NEUTRAL_CLUSTER = "rgba(107, 122, 140, 0.8)";
+const RELATED_NODE = "#e69532";
 
-const LEGEND = [
-  ["Thesis", "thesis"],
-  ["Topic", "topic"],
-  ["Methodology", "methodology"],
-  ["Adviser", "adviser"],
-  ["Gap", "gap"],
-  ["Tool", "tool"],
-  ["Dataset", "dataset"]
-];
-
-const STOPWORDS = new Set([
-  "about",
-  "after",
-  "against",
-  "also",
-  "among",
-  "and",
-  "are",
-  "based",
-  "best",
-  "between",
-  "can",
-  "certain",
-  "does",
-  "for",
-  "from",
-  "give",
-  "has",
-  "have",
-  "how",
-  "into",
-  "make",
-  "paper",
-  "research",
-  "show",
-  "study",
-  "that",
-  "the",
-  "their",
-  "then",
-  "there",
-  "these",
-  "thesis",
-  "this",
-  "topic",
-  "using",
-  "what",
-  "when",
-  "where",
-  "with"
-]);
-
-const SHORT_TERMS = new Set(["ai", "ml", "nlp", "iot", "cnn", "ann", "gan", "svm", "rnn"]);
-const MAX_SIGNAL_BRIDGES = 8;
-
-// Opt-in fixture for manually validating the public graph contract without the API.
-export const BRAIN_CONSTELLATION_FIXTURE = {
-  graph: {
-    nodes: [
-      { id: "t1", label: "Student Retention Study", type: "thesis", highlight: true },
-      { id: "a1", label: "Dr. Santos", type: "adviser" },
-      { id: "m1", label: "Survey Analysis", type: "methodology" },
-      { id: "g1", label: "No study on rural cohorts", type: "gap" },
-      { id: "g2", label: "Longitudinal evidence needed", type: "research_gap", highlighted: true }
-    ],
-    links: [
-      { source: "a1", target: "t1", label: "advises" },
-      { source: "m1", target: "t1", label: "uses" },
-      { source: "g1", target: "t1", label: "gap around this cluster", highlight: true },
-      { source: "g2", target: "t1", label: "evidence gap" }
-    ]
-  }
-};
-
-export default function BrainConstellation({ query, sources = [], activeSource, onSourceSelect, compact = false, graph }) {
+export default function BrainConstellation({ query = "", sources = [], activeSource, onSourceSelect, compact = false, graph }) {
   const [payload, setPayload] = useState(null);
+  const [hoveredNode, setHoveredNode] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const stageRef = useRef(null);
+  const graphRef = useRef(null);
+  const fittedViewportRef = useRef("");
   const size = useElementSize(stageRef);
 
   const sourceRefs = useMemo(() => buildSourceRefs(sources), [sources]);
-  const highlightTerms = useMemo(() => extractHighlightTerms(query), [query]);
-  const graphData = useMemo(
-    () => normalizeMapPayload(graph ?? payload, highlightTerms, sourceRefs),
-    [graph, payload, highlightTerms, sourceRefs]
-  );
+  const graphData = useMemo(() => normalizeMapPayload(graph ?? payload, sourceRefs), [graph, payload, sourceRefs]);
   const activeNodeId = resolveActiveNodeId(activeSource, sourceRefs);
+  const connectedCount = graphData.nodes.filter((node) => node.type === "thesis" && node.related).length;
+  const viewport = useMemo(() => calculateViewport(graphData.nodes, size), [graphData.nodes, size]);
 
   useEffect(() => {
     if (graph) {
       setLoading(false);
       setError(null);
-      setSelectedNode(null);
-      return undefined;
-    }
-
-    const cleanQuery = String(query || "").trim();
-    if (!cleanQuery) {
-      setPayload(null);
-      setSelectedNode(null);
       return undefined;
     }
 
     let cancelled = false;
     setLoading(true);
     setError(null);
-    setSelectedNode(null);
 
-    fetchMap(cleanQuery)
+    fetchMap(String(query || "").trim())
       .then((result) => {
         if (!cancelled) setPayload(result);
       })
       .catch((requestError) => {
         if (!cancelled) {
-          setPayload(null);
-          setError(
-            requestError?.response?.data?.detail ||
-              "The query graph could not be loaded from the map endpoint."
-          );
+          setError(requestError?.response?.data?.detail || "The repository network could not be loaded.");
         }
       })
       .finally(() => {
@@ -145,144 +53,94 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
   }, [graph, query]);
 
   useEffect(() => {
-    if (!activeNodeId) return;
-    const match = graphData.nodes.find((node) => String(node.id) === String(activeNodeId));
-    if (match) setSelectedNode((current) => (current?.id === match.id ? current : match));
-  }, [activeNodeId, graphData.nodes]);
+    if (graphData.nodes.length === 0 || !graphRef.current) return undefined;
+    const viewportKey = `${graphData.nodes.length}:${size.width}:${size.height}`;
+    if (fittedViewportRef.current === viewportKey) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      graphRef.current?.centerAt(viewport.centerX, viewport.centerY, 0);
+      graphRef.current?.zoom(viewport.minZoom, 0);
+      fittedViewportRef.current = viewportKey;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [graphData.nodes.length, size.height, size.width, viewport]);
 
-  const highlightedCount = graphData.nodes.filter(
-    (node) => node.isHighlighted || (selectedNode && String(node.id) === String(selectedNode.id))
-  ).length;
+  const openConnectedStudy = (node) => {
+    if (!isConnectedStudy(node)) return;
+    setSelectedNode(node);
+    onSourceSelect?.(node.data || node);
+  };
 
   return (
-    <section className={`card brain-graph-card${compact ? " compact" : ""}`} aria-label="Brain query graph visualization">
+    <section className={`card brain-graph-card repository-network${compact ? " compact" : ""}`} aria-label="Repository knowledge network">
       <div className="card-header">
         <div className="toolbar" style={{ justifyContent: "space-between" }}>
           <div>
-            <p className="eyebrow">Query constellation</p>
-            <h2>{compact ? "Repository map" : "Relevant nodes illuminated by the Brain query."}</h2>
-            {!compact && (
-              <p className="lede" style={{ marginTop: 4 }}>
-                The graph uses the submitted topic to surface related theses, domains, methods, and cited source paths.
-              </p>
-            )}
+            <p className="eyebrow">Knowledge network</p>
+            <h2>Repository map</h2>
+            <p className="lede" style={{ marginTop: 4 }}>
+              Hover or click a highlighted, connected study to inspect its repository research details.
+            </p>
           </div>
           <div className="toolbar graph-stats">
-            <span className="badge accent">{graphData.nodes.length} nodes</span>
-            <span className="badge">{graphData.links.length} links</span>
-            <span className="badge info">{highlightedCount} lit</span>
+            <span className="badge">{graphData.nodes.filter((node) => node.type === "thesis").length} studies</span>
+            <span className="badge info">{connectedCount} connected</span>
           </div>
         </div>
-        {highlightTerms.length > 0 && (
-          <div className="meta-row query-term-row" aria-label="Highlighted query terms">
-            {highlightTerms.slice(0, 8).map((term) => (
-              <span key={term} className="term-chip">
-                {term}
-              </span>
-            ))}
-          </div>
-        )}
       </div>
 
       <div className={`brain-graph-layout${compact ? " compact" : ""}`}>
         <div className="graph-stage brain-graph-stage" ref={stageRef}>
-          {loading && <div className="status graph-overlay-status">Rendering the query constellation.</div>}
+          {loading && graphData.nodes.length === 0 && <div className="status graph-overlay-status">Loading repository network.</div>}
           {error && <div className="status error graph-overlay-status">{error}</div>}
           {!loading && !error && graphData.nodes.length === 0 && (
-            <div className="status graph-overlay-status">No graph nodes were returned for this Brain query.</div>
+            <div className="status graph-overlay-status">No repository studies were returned.</div>
           )}
           {!error && graphData.nodes.length > 0 && (
             <ForceGraph2D
+              ref={graphRef}
               graphData={graphData}
               width={Math.max(size.width, 320)}
               height={Math.max(size.height, 420)}
               backgroundColor="rgba(0,0,0,0)"
-              cooldownTicks={90}
-              d3VelocityDecay={0.32}
-              warmupTicks={60}
+              cooldownTicks={0}
+              warmupTicks={0}
+              enableNodeDrag={false}
+              enablePanInteraction={false}
+              enablePointerInteraction
+              minZoom={viewport.minZoom}
+              maxZoom={Math.max(viewport.minZoom * 6, 1)}
               nodeId="id"
-              nodeLabel={(node) => nodeTooltip(node)}
-              linkLabel={(link) => link.label || link.relationship || "related"}
-              nodeRelSize={5}
-              linkVisibility={() => true}
-              linkColor={(link) => (link.bridge ? "#d97706" : isEmphasizedLink(link, selectedNode) ? "#e69532" : "rgba(117, 133, 153, 0.56)")}
-              linkWidth={(link) => (link.bridge ? 3.4 : isEmphasizedLink(link, selectedNode) ? 2.8 : 1.1)}
-              linkDirectionalParticles={(link) => (link.bridge ? 4 : isEmphasizedLink(link, selectedNode) ? 3 : 0)}
-              linkDirectionalParticleWidth={2.4}
-              linkDirectionalParticleSpeed={0.008}
-              onNodeClick={(node) => {
-                setSelectedNode(node);
-                if (node.sourceIndex && onSourceSelect) onSourceSelect(node.sourceIndex);
+              nodeRelSize={4}
+              linkVisibility={(link) => Boolean(link.related)}
+              linkColor={(link) => link.relationship === "adjacent_query_rank" ? "rgba(230, 149, 50, 0.42)" : "rgba(230, 149, 50, 0.78)"}
+              linkWidth={(link) => link.relationship === "adjacent_query_rank" ? 1.1 : 2.1}
+              linkDirectionalParticles={() => 0}
+              onNodeHover={(node) => {
+                const nextNode = isConnectedStudy(node) ? node : null;
+                setHoveredNode((currentNode) => (String(currentNode?.id || "") === String(nextNode?.id || "") ? currentNode : nextNode));
               }}
+              onNodeClick={openConnectedStudy}
               nodeCanvasObject={(node, ctx, globalScale) => drawNode(node, ctx, globalScale, selectedNode, activeNodeId)}
               nodePointerAreaPaint={(node, color, ctx) => paintPointerArea(node, color, ctx)}
             />
           )}
-
+          {hoveredNode && <HoverCard node={hoveredNode} />}
         </div>
-
-        {!compact && (
-          <aside className="card graph-detail brain-graph-detail" aria-label="Selected query graph node details">
-            {selectedNode ? <NodeDetails node={selectedNode} /> : <GraphGuide />}
-          </aside>
-        )}
       </div>
     </section>
   );
 }
 
-function GraphGuide() {
-  return (
-    <div>
-      <p className="eyebrow">Detail panel</p>
-      <h2>Select a lit node</h2>
-      <p className="lede">
-        Click a highlighted thesis, topic, method, adviser, tool, dataset, or gap node to inspect its metadata.
-      </p>
-      <div className="node-legend" aria-label="Graph legend">
-        {LEGEND.map(([label, type]) => (
-          <span key={type} className="legend-item">
-            <span className={`legend-dot${type === "gap" ? " gap" : ""}`} style={{ background: type === "gap" ? "#fffaf0" : NODE_COLORS[type], borderColor: NODE_COLORS[type] }} />
-            {label}
-          </span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function NodeDetails({ node }) {
-  const details = [
-    ["Type", titleCase(node.type || "node")],
-    ["Domain", node.domain || node.category || node.cluster],
-    ["Proponents / authors", peopleText(node.proponents || node.authors || node.author)],
-    ["Adviser / faculty", node.adviser || node.advisor || node.mentor],
-    ["Year", node.year || node.publication_year],
-    ["Methodology", toArray(node.methodology || node.method || node.research_design).join(", ")],
-    ["Tools", toArray(node.tools || node.tool || node.frameworks || node.software || node.methodology).join(", ")],
-    ["Datasets", toArray(node.datasets || node.dataset).join(", ")],
-    ["Matched keywords", toArray(node.highlightTerms).join(", ")],
-    ["Summary", node.summary || node.abstract || node.description],
-    ["Records", node.count || node.total || node.weight]
-  ].filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "");
+function HoverCard({ node }) {
+  const summary = String(node.abstract || node.summary || "").trim();
+  const preview = summary.length > 170 ? `${summary.slice(0, 167).trimEnd()}…` : summary;
 
   return (
-    <div>
-      <p className="eyebrow">Selected node</p>
-      <h2>{node.label || node.title || node.name || node.id}</h2>
-      <div className="meta-row" style={{ marginTop: 12 }}>
-        <span className="badge info">{titleCase(node.type || "node")}</span>
-        {node.domain && <span className="badge accent">{node.domain}</span>}
-        {node.isHighlighted && <span className="badge accent">Lit path</span>}
-      </div>
-      <div className="detail-list">
-        {details.map(([label, value]) => (
-          <div key={label} className="detail-item">
-            <span className="detail-label">{label}</span>
-            <span className="detail-value">{value}</span>
-          </div>
-        ))}
-      </div>
+    <div className="graph-hover-card" role="status">
+      <strong>{node.label}</strong>
+      <span>{[node.domain, node.year].filter(Boolean).join(" · ")}</span>
+      {preview && <p>{preview}</p>}
+      <small>Click to open study details{node.related ? " · related to your query" : ""}</small>
     </div>
   );
 }
@@ -290,92 +148,48 @@ function NodeDetails({ node }) {
 function drawNode(node, ctx, globalScale, selectedNode, activeNodeId) {
   if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
 
-  const type = normalizeType(node.type);
-  const color = NODE_COLORS[type] || NODE_COLORS.thesis;
-  const radius = nodeRadius(node);
+  const isCluster = node.type === "topic";
   const isSelected = selectedNode && String(selectedNode.id) === String(node.id);
-  const isActiveSource = activeNodeId && String(activeNodeId) === String(node.id);
-  const isLit = Boolean(node.isHighlighted || isSelected || isActiveSource);
-  const isCluster = type === "topic";
-  const isGap = type === "gap";
+  const isActive = activeNodeId && String(activeNodeId) === String(node.id);
+  const isRelated = Boolean(isConnectedStudy(node) || isSelected || isActive);
+  const radius = isCluster ? 12 : node.relatedRank === 1 ? 18 : isRelated ? 15 : 11;
 
   ctx.save();
-
-  if (isLit || isCluster) {
-    const halo = ctx.createRadialGradient(node.x, node.y, radius, node.x, node.y, radius + (isLit ? 24 : 16));
-    halo.addColorStop(0, isLit ? "rgba(255, 191, 0, 0.28)" : "rgba(6, 214, 160, 0.12)");
-    halo.addColorStop(1, "rgba(255, 255, 255, 0)");
+  if (isRelated) {
     ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + (isLit ? 24 : 16), 0, 2 * Math.PI, false);
-    ctx.fillStyle = halo;
+    ctx.arc(node.x, node.y, radius + 14, 0, 2 * Math.PI, false);
+    ctx.fillStyle = "rgba(230, 149, 50, 0.14)";
     ctx.fill();
   }
 
-  if (isLit) {
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + 9, 0, 2 * Math.PI, false);
-    ctx.strokeStyle = "rgba(255, 191, 0, 0.68)";
-    ctx.lineWidth = 2.2 / Math.max(globalScale, 0.8);
-    ctx.stroke();
-  }
-
-  ctx.shadowBlur = isLit || isGap ? 20 : 9;
-  ctx.shadowColor = isLit || isGap ? "rgba(230, 149, 50, 0.62)" : "rgba(36, 41, 47, 0.16)";
-  if (isGap) {
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius - 2, 0, 2 * Math.PI, false);
-    ctx.fillStyle = "rgba(255, 250, 240, 0.94)";
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius + 2, 0, 2 * Math.PI, false);
-    ctx.setLineDash([3.5 / Math.max(globalScale, 0.8), 3 / Math.max(globalScale, 0.8)]);
-    ctx.lineWidth = (isLit ? 3 : 2.1) / Math.max(globalScale, 0.8);
-    ctx.strokeStyle = isLit ? "#bd6d16" : color;
-    ctx.stroke();
-    ctx.setLineDash([]);
-  } else {
-    ctx.beginPath();
-    ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
-    ctx.fillStyle = color;
-    ctx.fill();
-    ctx.shadowBlur = 0;
-    ctx.lineWidth = isLit ? 2.8 : 1.35;
-    ctx.strokeStyle = isLit ? "#bd6d16" : "rgba(255,255,255,0.95)";
-    ctx.stroke();
-  }
-
-  if (node.sourceIndex) {
-    ctx.beginPath();
-    ctx.arc(node.x + radius * 0.58, node.y - radius * 0.58, Math.max(2.2, radius * 0.28), 0, 2 * Math.PI, false);
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-    ctx.lineWidth = 1.2;
-    ctx.strokeStyle = "rgba(255, 191, 0, 0.85)";
-    ctx.stroke();
-  }
-
+  ctx.beginPath();
+  ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
+  ctx.fillStyle = isRelated ? RELATED_NODE : isCluster ? NEUTRAL_CLUSTER : NEUTRAL_NODE;
+  ctx.fill();
+  ctx.lineWidth = (isRelated ? 1.8 : 0.8) / Math.max(globalScale, 0.8);
+  ctx.strokeStyle = isRelated ? "rgba(151, 83, 8, 0.88)" : "rgba(255, 255, 255, 0.88)";
+  ctx.stroke();
   ctx.restore();
 }
 
 function paintPointerArea(node, color, ctx) {
-  if (!Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
+  if (!isConnectedStudy(node) || !Number.isFinite(node.x) || !Number.isFinite(node.y)) return;
   ctx.fillStyle = color;
   ctx.beginPath();
-  ctx.arc(node.x, node.y, nodeRadius(node) + 10, 0, 2 * Math.PI, false);
+  ctx.arc(node.x, node.y, nodeRadius(node) + 12, 0, 2 * Math.PI, false);
   ctx.fill();
 }
 
-function nodeRadius(node) {
-  const type = normalizeType(node.type);
-  const value = Number(node.val || node.count || node.weight || node.size);
-  const base = type === "topic" ? 9 : type === "gap" ? 9 : type === "thesis" ? 6 : 7;
-  const litBoost = node.isHighlighted ? 2 : 0;
-  if (!Number.isFinite(value)) return base + litBoost;
-  return Math.max(base, Math.min(18, base + Math.sqrt(value))) + litBoost;
+function isConnectedStudy(node) {
+  return node?.type === "thesis" && Boolean(node.related);
 }
 
-function normalizeMapPayload(payload, highlightTerms, sourceRefs) {
+function nodeRadius(node) {
+  if (node.relatedRank === 1) return 18;
+  return node.related ? 15 : 11;
+}
+
+function normalizeMapPayload(payload, sourceRefs) {
   if (!payload) return { nodes: [], links: [] };
 
   const graph = payload.graph || payload.map || payload;
@@ -389,126 +203,93 @@ function normalizeMapPayload(payload, highlightTerms, sourceRefs) {
         : Array.isArray(payload.edges)
           ? payload.edges
           : [];
-
-  const nodes = rawNodes.map((node, index) => normalizeNode(node, index, highlightTerms, sourceRefs));
-  const nodeById = new Map(nodes.map((node) => [String(node.id), node]));
-
+  const nodes = layoutRepositoryNodes(rawNodes.map((node, index) => normalizeNode(node, index, sourceRefs)));
+  const nodeIds = new Set(nodes.map((node) => String(node.id)));
   const links = rawLinks
-    .map(normalizeLink)
-    .filter((link) => link.source && link.target && nodeById.has(String(link.source)) && nodeById.has(String(link.target)))
-    .map((link) => {
-      const source = nodeById.get(String(link.source));
-      const target = nodeById.get(String(link.target));
-      const highlighted = Boolean(
-        link.highlight || link.highlighted || link.cited || source?.isHighlighted || target?.isHighlighted
-      );
-      return { ...link, highlighted, isHighlighted: highlighted };
-    });
+    .map((link) => ({
+      ...link,
+      source: String(endpointId(link.source ?? link.source_id ?? link.sourceId)),
+      target: String(endpointId(link.target ?? link.target_id ?? link.targetId)),
+      related: Boolean(link.related || link.highlight || link.highlighted)
+    }))
+    .filter((link) => link.related && nodeIds.has(link.source) && nodeIds.has(link.target));
 
-  return { nodes, links: [...links, ...buildSignalBridges(nodes, links)] };
+  return { nodes, links };
 }
 
-function buildSignalBridges(nodes, links) {
-  const existingPairs = new Set(
-    links.map((link) => [String(endpointId(link.source)), String(endpointId(link.target))].sort().join("::"))
-  );
-  const signals = nodes
-    .filter((node) => node.type === "thesis" && node.isHighlighted && nodeTopic(node))
-    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
-  const candidates = [];
-
-  for (let sourceIndex = 0; sourceIndex < signals.length; sourceIndex += 1) {
-    for (let targetIndex = sourceIndex + 1; targetIndex < signals.length; targetIndex += 1) {
-      const source = signals[sourceIndex];
-      const target = signals[targetIndex];
-      if (nodeTopic(source) === nodeTopic(target)) continue;
-
-      const pairKey = [String(source.id), String(target.id)].sort().join("::");
-      if (existingPairs.has(pairKey)) continue;
-
-      candidates.push({
-        source: source.id,
-        target: target.id,
-        label: "Shared query signal",
-        relationship: "shared_query_signal",
-        bridge: true,
-        highlighted: true,
-        isHighlighted: true,
-        score: sharedSignalScore(source, target)
-      });
-    }
-  }
-
-  return candidates
-    .sort((left, right) => right.score - left.score || `${left.source}:${left.target}`.localeCompare(`${right.source}:${right.target}`))
-    .slice(0, MAX_SIGNAL_BRIDGES);
-}
-
-function nodeTopic(node) {
-  return String(node.domain || node.category || node.cluster || "").trim().toLowerCase();
-}
-
-function sharedSignalScore(source, target) {
-  const sourceTerms = new Set([...toArray(source.highlightTerms), ...toArray(source.keywords)].map((term) => term.toLowerCase()));
-  const targetTerms = new Set([...toArray(target.highlightTerms), ...toArray(target.keywords)].map((term) => term.toLowerCase()));
-  return [...sourceTerms].filter((term) => targetTerms.has(term)).length;
-}
-
-function normalizeNode(node, index, highlightTerms, sourceRefs) {
+function normalizeNode(node, index, sourceRefs) {
   const embedded = node.data && typeof node.data === "object" ? node.data : {};
   const merged = { ...embedded, ...node };
-  const id = merged.id ?? merged.node_id ?? merged.thesis_id ?? merged.key ?? merged.name ?? `${merged.type || "node"}-${index}`;
-  const type = normalizeType(merged.type || merged.group || merged.kind || merged.node_type || (merged.title ? "thesis" : "topic"));
+  const id = merged.id ?? merged.node_id ?? merged.thesis_id ?? `${merged.type || "node"}-${index}`;
+  const type = normalizeType(merged.type || (merged.title ? "thesis" : "topic"));
   const sourceRef = sourceRefs.byId.get(String(id));
-  const searchText = nodeSearchText(merged);
-  const matchingTerms = highlightTerms.filter((term) => searchText.includes(term));
 
   return {
     ...merged,
     id: String(id),
     type,
-    label: merged.label || merged.name || merged.title || String(id),
-    proponents: merged.proponents_text || merged.proponents || merged.authors || merged.author,
-    val: merged.val || merged.count || merged.weight || merged.size || (type === "topic" ? 12 : 4),
-    highlight: Boolean(merged.highlight),
-    highlighted: Boolean(merged.highlighted),
-    queryHighlighted: Boolean(merged.queryHighlighted || matchingTerms.length > 0),
-    sourceHighlighted: Boolean(merged.sourceHighlighted || sourceRef),
+    label: merged.label || merged.title || merged.name || String(id),
+    related: Boolean(merged.related || merged.highlighted || merged.highlight),
+    cited: Boolean(sourceRef),
     sourceIndex: sourceRef?.index,
-    highlightTerms: matchingTerms.length > 0 ? matchingTerms : toArray(merged.highlight_terms),
-    isHighlighted: Boolean(
-      merged.highlight || merged.highlighted || merged.queryHighlighted || merged.sourceHighlighted || sourceRef || matchingTerms.length > 0
-    )
+    relatedRank: Number(merged.related_rank || merged.relatedRank || 0),
+    val: type === "topic" ? 8 : 3
   };
 }
 
-function normalizeLink(link) {
+function layoutRepositoryNodes(nodes) {
+  const domainNames = [...new Set(nodes.map((node) => node.domain || "Other"))].sort();
+  const domainIndex = new Map(domainNames.map((domain, index) => [domain, index]));
+  const thesesByDomain = new Map(domainNames.map((domain) => [domain, []]));
+  nodes.filter((node) => node.type === "thesis").forEach((node) => thesesByDomain.get(node.domain || "Other")?.push(node));
+  thesesByDomain.forEach((records) => records.sort((left, right) => String(left.id).localeCompare(String(right.id))));
+
+  return nodes.map((node) => {
+    const domain = node.domain || "Other";
+    const index = domainIndex.get(domain) || 0;
+    const domainAngle = (Math.PI * 2 * index) / Math.max(domainNames.length, 1) - Math.PI / 2;
+    const centerRadius = domainNames.length > 1 ? 285 : 0;
+    const centerX = Math.cos(domainAngle) * centerRadius;
+    const centerY = Math.sin(domainAngle) * centerRadius;
+
+    if (node.type === "topic") return { ...node, fx: centerX, fy: centerY };
+
+    const records = thesesByDomain.get(domain) || [];
+    const recordIndex = records.findIndex((record) => String(record.id) === String(node.id));
+    const recordAngle = (Math.PI * 2 * Math.max(recordIndex, 0)) / Math.max(records.length, 1) + domainAngle;
+    const ringRadius = 72 + (Math.max(recordIndex, 0) % 3) * 16;
+    return {
+      ...node,
+      fx: centerX + Math.cos(recordAngle) * ringRadius,
+      fy: centerY + Math.sin(recordAngle) * ringRadius
+    };
+  });
+}
+
+function calculateViewport(nodes, size) {
+  const points = nodes.filter((node) => Number.isFinite(node.fx) && Number.isFinite(node.fy));
+  if (points.length === 0) return { centerX: 0, centerY: 0, minZoom: 1 };
+
+  const xs = points.map((node) => node.fx);
+  const ys = points.map((node) => node.fy);
+  const padding = 48;
+  const minX = Math.min(...xs) - padding;
+  const maxX = Math.max(...xs) + padding;
+  const minY = Math.min(...ys) - padding;
+  const maxY = Math.max(...ys) + padding;
+  const availableWidth = Math.max(1, size.width);
+  const availableHeight = Math.max(1, size.height);
+
   return {
-    ...link,
-    source: String(endpointId(link.source ?? link.source_id ?? link.sourceId ?? link.from ?? link.from_id)),
-    target: String(endpointId(link.target ?? link.target_id ?? link.targetId ?? link.to ?? link.to_id)),
-    label: link.label || link.relationship || link.relation || link.type || "",
-    highlight: Boolean(link.highlight),
-    highlighted: Boolean(link.highlighted),
-    cited: Boolean(link.cited || link.highlighted || link.highlight || link.active || link.is_cited)
+    centerX: (minX + maxX) / 2,
+    centerY: (minY + maxY) / 2,
+    minZoom: Math.min(availableWidth / Math.max(maxX - minX, 1), availableHeight / Math.max(maxY - minY, 1))
   };
-}
-
-function endpointId(value) {
-  if (value && typeof value === "object") return value.id ?? value.node_id ?? value.name ?? "";
-  return value ?? "";
-}
-
-function isEmphasizedLink(link, selectedNode) {
-  if (link.isHighlighted || !selectedNode) return Boolean(link.isHighlighted);
-  const selectedId = String(selectedNode.id);
-  return String(endpointId(link.source)) === selectedId || String(endpointId(link.target)) === selectedId;
 }
 
 function buildSourceRefs(sources) {
   const byId = new Map();
   const byIndex = new Map();
-
   sources.forEach((source, index) => {
     const id = source?.id ?? source?.thesis_id ?? source?.node_id;
     if (!id) return;
@@ -516,7 +297,6 @@ function buildSourceRefs(sources) {
     byId.set(String(id), entry);
     byIndex.set(index + 1, entry);
   });
-
   return { byId, byIndex };
 }
 
@@ -528,71 +308,14 @@ function resolveActiveNodeId(activeSource, sourceRefs) {
   return String(activeSource);
 }
 
-function extractHighlightTerms(query) {
-  const cleanQuery = String(query || "").toLowerCase();
-  const tokens = cleanQuery.match(/[a-z0-9+#.]+/g) || [];
-  return [...new Set(tokens)]
-    .map((token) => token.replace(/^\.+|\.+$/g, ""))
-    .filter((token) => token && !STOPWORDS.has(token))
-    .filter((token) => token.length >= 3 || SHORT_TERMS.has(token))
-    .slice(0, 12);
-}
-
-function nodeSearchText(node) {
-  const values = [
-    node.id,
-    node.label,
-    node.title,
-    node.name,
-    node.domain,
-    node.category,
-    node.cluster,
-    node.author,
-    node.authors,
-    node.proponents,
-    node.proponents_text,
-    node.adviser,
-    node.advisor,
-    node.mentor,
-    node.abstract,
-    node.summary,
-    node.description,
-    node.keywords,
-    node.tags,
-    node.topics,
-    node.methodology,
-    node.method,
-    node.research_design,
-    node.tools,
-    node.frameworks,
-    node.software,
-    node.datasets,
-    node.dataset
-  ];
-
-  return values
-    .flatMap((value) => toArray(value))
-    .join(" ")
-    .toLowerCase();
-}
-
 function normalizeType(type) {
   const normalized = String(type || "thesis").toLowerCase().replace(/[\s-]+/g, "_");
-  if (["domain", "cluster", "category", "theme"].includes(normalized)) return "topic";
-  if (["method", "methods", "research_method", "research_design"].includes(normalized)) return "methodology";
-  if (["advisor", "mentor", "faculty"].includes(normalized)) return "adviser";
-  if (["software", "framework", "hardware"].includes(normalized)) return "tool";
-  if (["research_gap", "opportunity"].includes(normalized)) return "gap";
-  if (NODE_COLORS[normalized]) return normalized;
-  return "thesis";
+  return ["domain", "cluster", "category", "theme"].includes(normalized) ? "topic" : "thesis";
 }
 
-function nodeTooltip(node) {
-  const label = node.label || node.title || node.name || node.id;
-  const type = titleCase(node.type || "node");
-  const subtitle = node.domain || node.adviser || node.year || node.summary || "";
-  const highlights = toArray(node.highlightTerms).join(", ");
-  return `${label}<br/>${type}${subtitle ? `<br/>${subtitle}` : ""}${highlights ? `<br/>Matched: ${highlights}` : ""}`;
+function endpointId(value) {
+  if (value && typeof value === "object") return value.id ?? value.node_id ?? value.name ?? "";
+  return value ?? "";
 }
 
 function useElementSize(ref) {
@@ -600,42 +323,16 @@ function useElementSize(ref) {
 
   useEffect(() => {
     if (!ref.current) return undefined;
-
     const update = () => {
+      if (!ref.current) return;
       const rect = ref.current.getBoundingClientRect();
       setSize({ width: rect.width || 900, height: rect.height || 520 });
     };
-
     update();
     const observer = new ResizeObserver(update);
     observer.observe(ref.current);
-
     return () => observer.disconnect();
   }, [ref]);
 
   return size;
-}
-
-function titleCase(value) {
-  return String(value)
-    .replace(/[_-]+/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
-}
-
-function peopleText(value) {
-  if (!value) return "";
-  if (Array.isArray(value)) return value.filter(Boolean).map(String).join(", ");
-  return String(value).trim();
-}
-
-function toArray(value) {
-  if (!value) return [];
-  if (Array.isArray(value)) return value.filter(Boolean).map(String);
-  if (typeof value === "string") {
-    return value
-      .split(/[,;|]/)
-      .map((part) => part.trim())
-      .filter(Boolean);
-  }
-  return [String(value)];
 }

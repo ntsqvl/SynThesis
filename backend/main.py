@@ -24,6 +24,7 @@ DATA_PATH = BASE_DIR / "data" / "synthesis_research_data.json"
 EMBEDDINGS_PATH = BASE_DIR / "data" / "embeddings.json"
 EMBED_MODEL = os.getenv("SYNTHESIS_EMBED_MODEL") or os.getenv("EMBED_MODEL", "text-embedding-3-small")
 CHAT_MODEL = os.getenv("SYNTHESIS_CHAT_MODEL") or os.getenv("CHAT_MODEL", "gpt-4o")
+RETRIEVAL_TOP_K = 15
 
 app = FastAPI(title="SynThesis API")
 app.add_middleware(
@@ -231,7 +232,7 @@ def record_matches_query(record: dict[str, Any], terms: list[str]) -> bool:
     return any(term in haystack for term in terms)
 
 
-def keyword_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
+def keyword_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict[str, Any]]:
     """Local fallback used when the embedding index or AI key is unavailable."""
     q = query.strip().lower()
     if not q:
@@ -272,7 +273,7 @@ def keyword_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
     return ALL_THESES[:top_k]
 
 
-def semantic_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
+def semantic_search(query: str, top_k: int = RETRIEVAL_TOP_K) -> list[dict[str, Any]]:
     """Local embedding search over embeddings.json with a keyword fallback.
 
     The query is embedded with the same model the index was built with, then
@@ -280,7 +281,7 @@ def semantic_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
     index is empty or embedding fails (for example, no AI key configured), it
     falls back to the JSON-safe keyword search so the endpoint still responds.
     """
-    limit = max(1, min(int(top_k or 8), 30))
+    limit = max(1, min(int(top_k or RETRIEVAL_TOP_K), 30))
     if not EMBEDDING_INDEX:
         return keyword_search(query, limit)
     try:
@@ -311,28 +312,73 @@ def extract_citation_numbers(answer: str) -> set[int]:
     return citation_numbers
 
 
+def compact_answer_citations(answer: str, results: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+    """Renumber cited sources consecutively in their first-mentioned order.
+
+    The model cites positions in the full retrieval list, which can naturally
+    produce a sequence such as [3], [1], [6]. The UI should instead display
+    the first cited study as [1], then [2], and so on. The matching source list
+    is compacted in exactly the same order so every citation chip still opens
+    the correct record.
+    """
+    original_to_display: dict[int, int] = {}
+    cited_results: list[dict[str, Any]] = []
+
+    def replace_block(match: re.Match[str]) -> str:
+        displayed_numbers: list[str] = []
+        for raw_number in match.group(1).split(","):
+            number_text = raw_number.strip()
+            if not number_text.isdigit():
+                continue
+
+            original_number = int(number_text)
+            if 1 <= original_number <= len(results):
+                if original_number not in original_to_display:
+                    original_to_display[original_number] = len(cited_results) + 1
+                    cited_results.append(results[original_number - 1])
+                displayed_numbers.append(str(original_to_display[original_number]))
+            else:
+                # Keep invalid references visible so confidence reporting can
+                # flag them rather than silently changing their meaning.
+                displayed_numbers.append(str(original_number))
+
+        return f"[{', '.join(displayed_numbers)}]" if displayed_numbers else match.group(0)
+
+    compacted_answer = re.sub(r"\[([0-9,\s]+)\]", replace_block, answer or "")
+    return compacted_answer, cited_results or results
+
+
 def compute_repository_confidence(query: str, answer: str, results: list[dict[str, Any]]) -> dict[str, Any]:
     """Estimate how strongly the answer is grounded in repository studies.
 
-    The score is not a model truth score. It checks three practical signals:
-    returned-source membership in the repository JSON, whether cited numbers map
-    to returned repository sources, and whether the returned records match the
-    query terms.
+    The score is not a model truth score. Verified repository membership is a
+    gate; once it passes, the score weighs citation validity and query fit.
+    Source counts remain response context rather than a quality penalty.
     """
     if not results:
         return {
             "score": 0.0,
-            "label": "No repository evidence",
+            "label": "No evidence",
             "repository_source_count": 0,
             "returned_source_count": 0,
             "cited_sources": [],
             "invalid_citations": sorted(extract_citation_numbers(answer)),
             "query_match_count": 0,
+            "signals": {
+                "repository_membership": 0.0,
+                "citation_validity": 0.0,
+                "query_fit": 0.0,
+            },
+            "calculation": {
+                "formula": "verified repository membership gate, then 60% citation validity + 40% query fit",
+                "weights": {"citation_validity": 0.60, "query_fit": 0.40},
+                "source_count_scored": False,
+            },
         }
 
     repository_flags = [str(record.get("id")) in REPOSITORY_IDS for record in results]
     repository_source_count = sum(1 for flag in repository_flags if flag)
-    membership_score = repository_source_count / max(len(results), 1)
+    membership_score = 1.0 if repository_source_count == len(results) else 0.0
 
     citations = extract_citation_numbers(answer)
     valid_citations = sorted(
@@ -345,25 +391,24 @@ def compute_repository_confidence(query: str, answer: str, results: list[dict[st
     if citations:
         citation_score = len(valid_citations) / max(len(citations), 1)
     else:
-        citation_score = 0.35 if repository_source_count else 0.0
+        citation_score = 0.0
 
     terms = query_terms(query)
     query_match_count = sum(1 for record in results if record_matches_query(record, terms)) if terms else len(results)
     query_fit_score = query_match_count / max(min(len(results), 6), 1)
     query_fit_score = max(0.0, min(query_fit_score, 1.0))
 
-    evidence_volume_score = min(repository_source_count / 4, 1.0)
-    score = membership_score * ((0.52 * citation_score) + (0.28 * query_fit_score) + (0.20 * evidence_volume_score))
+    score = membership_score * ((0.60 * citation_score) + (0.40 * query_fit_score))
     score = max(0.0, min(score, 1.0))
 
     if score >= 0.8:
-        label = "High repository grounding"
+        label = "High"
     elif score >= 0.55:
-        label = "Moderate repository grounding"
+        label = "Moderate"
     elif score > 0:
-        label = "Low repository grounding"
+        label = "Low"
     else:
-        label = "No repository evidence"
+        label = "No evidence"
 
     return {
         "score": round(score, 3),
@@ -374,6 +419,16 @@ def compute_repository_confidence(query: str, answer: str, results: list[dict[st
         "invalid_citations": invalid_citations,
         "query_match_count": query_match_count,
         "query_terms": terms,
+        "signals": {
+            "repository_membership": round(membership_score, 3),
+            "citation_validity": round(citation_score, 3),
+            "query_fit": round(query_fit_score, 3),
+        },
+        "calculation": {
+            "formula": "verified repository membership gate, then 60% citation validity + 40% query fit",
+            "weights": {"citation_validity": 0.60, "query_fit": 0.40},
+            "source_count_scored": False,
+        },
     }
 
 
@@ -401,11 +456,12 @@ Methods and tools found in the matching repository records include {', '.join(me
 class Message(BaseModel):
     role: str
     content: str
+    repository_confidence: dict[str, Any] | None = None
 
 
 class BrainRequest(BaseModel):
     query: str
-    top_k: int = 8
+    top_k: int = RETRIEVAL_TOP_K
     history: list[Message] = Field(default_factory=list)
 
 
@@ -438,6 +494,33 @@ def health():
 def brain(req: BrainRequest):
     results = semantic_search(req.query, req.top_k)
     adviser_ranking = build_adviser_ranking(results, req.query)
+    max_history = 20
+    trimmed_history = req.history[-max_history:]
+
+    prior_confidence_records = [
+        message.repository_confidence
+        for message in trimmed_history
+        if message.role == "assistant" and message.repository_confidence
+    ]
+    if prior_confidence_records:
+        prior_confidence = prior_confidence_records[-1]
+        prior_signals = prior_confidence.get("signals") or {}
+        signal_summary = ", ".join(
+            f"{name.replace('_', ' ')}={value}"
+            for name, value in prior_signals.items()
+            if isinstance(value, (int, float))
+        ) or "no signal breakdown was recorded"
+        confidence_history_context = (
+            "The immediately previous assistant response had repository-confidence metadata: "
+            f"{prior_confidence.get('score', 'unknown')} ({prior_confidence.get('label', 'unknown')}). "
+            f"Its recorded signals were: {signal_summary}. "
+            "Use this record only when the user asks about the previous response's confidence."
+        )
+    else:
+        confidence_history_context = (
+            "No repository-confidence metadata is available for an earlier assistant response. "
+            "Do not invent a specific reason for an earlier score."
+        )
 
     context = "\n".join(
         f"[{index}] {record_kind(record)} | [{record.get('year') or 'n/d'}] "
@@ -453,6 +536,14 @@ def brain(req: BrainRequest):
 STRICT RULE: Base every claim, study reference, finding, and suggestion SOLELY on the repository context provided below. Do not invent or recall studies outside of it. If the repository has no relevant information, say so honestly.
 
 CITATION RULE: When referencing a thesis or faculty research record, cite it inline using its bracketed source number, for example [1] or [2]. Do not cite studies that are not in the repository context.
+
+EVIDENCE AND CONFIDENCE RULE:
+- All research information in your answer is retrieved from and assessed against the FEU Tech repository context below. Do not present external knowledge as repository evidence.
+- Repository confidence is deterministic backend metadata, not a measure of your personal certainty or of research quality. Verified repository membership is required; after that, it is calculated from 60% citation validity and 40% query fit. Source count is displayed as context, not used to lower the score.
+- For questions about confidence, integrity, citations, or source grounding, begin exactly: "The information in this response was retrieved from and assessed against the FEU Tech repository content." Explain only the calculation and confidence records supplied here.
+- If asked why an earlier score was low or moderate, report its recorded score and signal values. Do not say "likely", "might", "could", "all or most", or otherwise speculate about a cause that is not directly represented by those values.
+- Questions about the application's confidence calculation are system-metadata questions, so answer them without pretending that a thesis source proves the calculation.
+- Previous-confidence context: {confidence_history_context}
 
 RESPONSE BEHAVIOR:
 - Keep every relevant cited detail in the section where it belongs. Do not move numbered study lists into extra sections.
@@ -474,8 +565,6 @@ RESPONSE BEHAVIOR:
 {context}
 -------------------------------------------------"""
 
-    max_history = 20
-    trimmed_history = req.history[-max_history:]
     messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     messages.extend({"role": msg.role, "content": msg.content} for msg in trimmed_history)
     messages.append({"role": "user", "content": req.query})
@@ -492,18 +581,19 @@ RESPONSE BEHAVIOR:
         warning = f"AI synthesis fallback used: {exc.__class__.__name__}"
         answer = fallback_brain_answer(req.query, results)
 
-    repository_confidence = compute_repository_confidence(req.query, answer, results)
+    answer, display_results = compact_answer_citations(answer, results)
+    repository_confidence = compute_repository_confidence(req.query, answer, display_results)
 
     return {
         "answer": answer,
-        "sources": [public_record(record) for record in results],
+        "sources": [public_record(record) for record in display_results],
         "adviser_ranking": adviser_ranking,
         "repository_confidence": repository_confidence,
         "confidence": repository_confidence["score"],
         "history": [
             *[{"role": message.role, "content": message.content} for message in req.history],
             {"role": "user", "content": req.query},
-            {"role": "assistant", "content": answer},
+            {"role": "assistant", "content": answer, "repository_confidence": repository_confidence},
         ],
         "warning": warning,
     }
@@ -536,12 +626,17 @@ def catalog(
 
 
 @app.get("/api/map")
-def knowledge_map(query: str = Query(default="")):
-    theses = semantic_search(query, top_k=20) if query else ALL_THESES
-    terms = query_terms(query)
+def knowledge_map(
+    query: str = Query(default=""),
+    limit: int = Query(default=RETRIEVAL_TOP_K, ge=1, le=30),
+):
+    """Return a stable full-repository graph plus query-specific connections."""
+    related_records = semantic_search(query, top_k=limit) if query else []
+    related_ids = {str(record.get("id")) for record in related_records}
+    related_rank = {str(record.get("id")): index for index, record in enumerate(related_records, start=1)}
 
     clusters: dict[str, list[dict[str, Any]]] = {}
-    for record in theses:
+    for record in ALL_THESES:
         domain = record.get("domain", "Other") or "Other"
         clusters.setdefault(domain, []).append(record)
 
@@ -550,20 +645,17 @@ def knowledge_map(query: str = Query(default="")):
 
     for domain, records in clusters.items():
         cluster_id = f"cluster__{domain.replace(' ', '_')}"
-        cluster_highlighted = bool(terms) and (
-            any(term in domain.lower() for term in terms)
-            or any(record_matches_query(record, terms) for record in records)
-        )
+        cluster_related = any(str(record.get("id")) in related_ids for record in records)
         nodes.append({
             "id": cluster_id,
             "label": domain,
             "type": "cluster",
             "domain": domain,
             "count": len(records),
-            "highlighted": cluster_highlighted,
+            "related": cluster_related,
         })
         for record in records:
-            record_highlighted = record_matches_query(record, terms)
+            record_related = str(record.get("id")) in related_ids
             nodes.append({
                 "id": record.get("id"),
                 "label": record.get("title"),
@@ -580,23 +672,42 @@ def knowledge_map(query: str = Query(default="")):
                 "keywords": record.get("keywords", []),
                 "datasets": record.get("datasets", []),
                 "abstract": record.get("abstract"),
-                "highlighted": record_highlighted,
+                "related": record_related,
+                "related_rank": related_rank.get(str(record.get("id"))),
                 "data": public_record(record),
             })
+
+    # The related studies form one query constellation: the strongest retrieved
+    # record is the anchor, and every additional record is connected to it. A
+    # short ranked chain adds local structure without claiming a citation or
+    # direct research relationship that the archive does not explicitly store.
+    if related_records:
+        anchor_id = related_records[0].get("id")
+        previous_id = anchor_id
+        for record in related_records[1:]:
+            record_id = record.get("id")
             edges.append({
-                "source": cluster_id,
-                "target": record.get("id"),
-                "relationship": "belongs_to_domain",
-                "highlighted": record_highlighted or cluster_highlighted,
-                "cited": record_highlighted,
+                "source": anchor_id,
+                "target": record_id,
+                "relationship": "retrieved_for_same_query",
+                "related": True,
             })
+            if previous_id != anchor_id:
+                edges.append({
+                    "source": previous_id,
+                    "target": record_id,
+                    "relationship": "adjacent_query_rank",
+                    "related": True,
+                })
+            previous_id = record_id
 
     return {
         "nodes": nodes,
         "edges": edges,
         "links": edges,
         "clusters": list(clusters.keys()),
-        "highlight_terms": terms,
+        "related_ids": sorted(related_ids),
+        "related_count": len(related_ids),
         "query": query or None,
     }
 

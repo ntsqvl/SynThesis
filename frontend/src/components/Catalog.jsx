@@ -131,11 +131,11 @@ export default function Catalog({ brainContext = {} }) {
       <header className="page-header">
         <div className="header-copy">
           <p className="eyebrow">Research catalog</p>
-          <h1>{isRepositoryView ? "All repository studies." : "Studies related to the latest Brain search."}</h1>
+          <h1>{isRepositoryView ? "All repository studies." : "Studies mentioned in this Brain conversation."}</h1>
           <p className="lede">
             {isRepositoryView
               ? "Browse and filter every thesis and faculty research record in the SynThesis repository."
-              : "The catalog now narrows to repository records cited or retrieved by SynThesis in the Brain tab."}
+              : "The catalog collects every repository study cited throughout the current Brain conversation."}
           </p>
           {!isRepositoryView && brainQuery && (
             <p className="lede catalog-context-line">
@@ -204,13 +204,13 @@ export default function Catalog({ brainContext = {} }) {
           ) : (
             <CatalogResults
               title="Brain-related study index"
-              description="These are the theses and faculty research records explicitly cited in the latest Brain answer."
+              description="These are the theses and faculty research records explicitly cited anywhere in the current Brain conversation."
               badge={`${relatedCatalog.items.length} related records`}
               items={visibleItems}
               totalItems={activeItems.length}
               currentPage={currentPage}
               totalPages={totalPages}
-              emptyMessage={citedSourceIds.size === 0 ? "The latest Brain answer did not cite a repository study." : "No cited records match the current filters."}
+              emptyMessage={citedSourceIds.size === 0 ? "This Brain conversation has not cited a repository study yet." : "No cited records match the current filters."}
               onPageChange={setCurrentPage}
               onSelect={setSelectedStudy}
             />

@@ -11,7 +11,7 @@ const client = axios.create({
   }
 });
 
-export const brainQuery = (query, top_k = 8, history = []) =>
+export const brainQuery = (query, top_k = 15, history = []) =>
   client.post("/api/brain", { query, top_k, history }).then((response) => response.data);
 
 export const fetchCatalog = (params = {}) =>

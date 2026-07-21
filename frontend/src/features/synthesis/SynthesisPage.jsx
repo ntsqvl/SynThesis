@@ -1,7 +1,6 @@
-
 import { useEffect, useMemo, useRef, useState } from "react";
-import { brainQuery } from "../api/index.js";
-import BrainConstellation from "./BrainConstellation.jsx";
+import { brainQuery } from "../../api/index.js";
+import BrainConstellation from "../../components/BrainConstellation.jsx";
 
 const DEFAULT_SECTIONS = ["What's Been Studied", "Gap Report", "Recommended Methods & Tools"];
 
@@ -20,7 +19,7 @@ const EMPTY_SESSION = {
   activeCitation: null
 };
 
-export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResult, onBrainClear, onOpenReports }) {
+export default function SynthesisPage({ session = EMPTY_SESSION, setSession, onBrainResult, onBrainClear, onOpenReports }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const chatEndRef = useRef(null);
@@ -71,7 +70,10 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
     setError(null);
 
     try {
-      const result = await brainQuery(cleanQuery, 8, historyForRequest);
+      const result = await brainQuery(cleanQuery, 15, historyForRequest);
+      if (result?.error) {
+        throw new Error(typeof result.error === "string" ? result.error : "The synthesis request could not be completed.");
+      }
       const normalized = normalizeBrainPayload(result);
       const answerText = String(result?.answer ?? result?.response ?? result?.result ?? "");
       const adviserRanking = normalizeAdviserRanking(result?.adviser_ranking || result?.adviserRanking || []);
@@ -88,6 +90,7 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
         warning: result?.warning || "",
         createdAt: Date.now()
       };
+      const conversationSources = collectCitedSources([...messages, assistantMessage]);
 
       updateSession((current) => ({
         payload: result,
@@ -105,21 +108,17 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
 
       onBrainResult?.({
         query: cleanQuery,
-        sources: normalized.sources,
-        citedSourceIds: citedSourceIds(answerText, normalized.sources),
+        sources: conversationSources,
+        citedSourceIds: conversationSources.map((source) => String(source.id)),
         adviserRanking,
         confidence: normalized.confidence,
         repositoryConfidence: normalized.repositoryConfidence
       });
     } catch (requestError) {
-      const timeoutMessage =
-        "The backend took too long to answer this follow-up. Retry the query or shorten it.";
-      const fallbackMessage =
-        "Backend unreachable. Start FastAPI on port 8000, then retry the query.";
       setError(
-        requestError?.code === "ECONNABORTED" || String(requestError?.message || "").toLowerCase().includes("timeout")
-          ? timeoutMessage
-          : requestError?.response?.data?.detail || fallbackMessage
+        requestError?.response?.data?.detail ||
+          requestError?.message ||
+          "Backend unreachable. Start FastAPI on port 8000, then retry the query."
       );
     } finally {
       setLoading(false);
@@ -165,8 +164,9 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
               </p>
             </div>
             <div className="brain-header-badges">
-              {latestConfidence !== null && latestConfidence !== undefined && <ConfidenceBadge value={latestConfidence} />}
-              {latestRepositoryConfidence?.label && <span className="badge info">{latestRepositoryConfidence.label}</span>}
+              {latestConfidence !== null && latestConfidence !== undefined && (
+                <ConfidenceBadge value={latestConfidence} />
+              )}
             </div>
           </div>
 
@@ -239,7 +239,7 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
         <aside className="brain-side-panel" aria-label="Brain map and selected study details">
           {activeCitation?.source ? (
             <StudyDetail citation={activeCitation} onBack={() => updateSession({ activeCitation: null })} />
-          ) : latestQuery ? (
+          ) : (
             <BrainConstellation
               query={latestQuery}
               sources={latestSources}
@@ -262,8 +262,6 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
               }}
               compact
             />
-          ) : (
-            <BrainMapPlaceholder />
           )}
         </aside>
       </div>
@@ -360,9 +358,18 @@ function ConfidenceBadge({ value }) {
       ? Math.round(numeric * 100)
       : Math.round(numeric)
     : null;
-  const label = normalizedValue !== null ? `${normalizedValue}% repository confidence` : String(value);
+  const tier = normalizedValue === null || normalizedValue < 55 ? "low" : normalizedValue < 80 ? "moderate" : "high";
+  const percentage = normalizedValue !== null ? `${normalizedValue}%` : String(value);
 
-  return <span className="badge success">{label}</span>;
+  return (
+    <span
+      className={`badge confidence-badge ${tier}`}
+      title="Evidence confidence reflects repository support and citations, not the model's self-rated certainty."
+    >
+      <span className="confidence-indicator" aria-hidden="true" />
+      {percentage} confidence level
+    </span>
+  );
 }
 
 function AnswerSection({ title, content, index, sources, message, onCitationClick, onOpenReports }) {
@@ -430,10 +437,10 @@ function StudyDetail({ citation, onBack }) {
         <button type="button" className="button secondary" onClick={onBack}>
           Back to map
         </button>
-        <span className="citation-chip">[{citation.citationNumber}]</span>
+        {citation.citationNumber && <span className="citation-chip">[{citation.citationNumber}]</span>}
       </div>
       <div className="study-detail-body">
-        <p className="eyebrow">Cited repository record</p>
+        <p className="eyebrow">{citation.citationNumber ? "Cited repository record" : "Related repository record"}</p>
         <h2>{source.title || citation.title || "Untitled repository record"}</h2>
         <div className="meta-row" style={{ marginTop: 14 }}>
           <span className="badge info">{typeLabel}</span>
@@ -726,12 +733,50 @@ function normalizeSources(sources) {
   });
 }
 
+function citedSourceIds(answer, sources) {
+  if (!Array.isArray(sources)) return [];
+
+  const citationNumbers = [...String(answer || "").matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)]
+    .flatMap((match) => match[1].split(","))
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isInteger(value) && value >= 1 && value <= sources.length);
+
+  return [...new Set(citationNumbers.map((citationNumber) => String(sources[citationNumber - 1]?.id)).filter(Boolean))];
+}
+
+function collectCitedSources(messages) {
+  const sourcesById = new Map();
+
+  for (const message of messages || []) {
+    if (message?.role !== "assistant" || !Array.isArray(message.sources)) continue;
+    const mentionedIds = new Set(citedSourceIds(message.content, message.sources));
+    for (const source of message.sources) {
+      if (!mentionedIds.has(String(source?.id)) || sourcesById.has(String(source.id))) continue;
+      sourcesById.set(String(source.id), source);
+    }
+  }
+
+  return [...sourcesById.values()];
+}
+
 function renderWithCitations(text, sources, message, onCitationClick) {
+  const parts = String(text || "").split(/(\*\*[\s\S]+?\*\*|__[\s\S]+?__)/g);
+
+  return parts.map((part, index) => {
+    const isBold = (part.startsWith("**") && part.endsWith("**")) || (part.startsWith("__") && part.endsWith("__"));
+    const inlineContent = isBold ? part.slice(2, -2) : part;
+    const rendered = renderCitationChips(inlineContent, sources, message, onCitationClick, index);
+
+    return isBold ? <strong key={`bold-${index}`}>{rendered}</strong> : <span key={`text-${index}`}>{rendered}</span>;
+  });
+}
+
+function renderCitationChips(text, sources, message, onCitationClick, parentIndex) {
   const parts = String(text || "").split(/(\[(?:\d+\s*(?:,\s*\d+\s*)*)\])/g);
 
   return parts.map((part, index) => {
     const match = part.match(/^\[((?:\d+\s*(?:,\s*\d+\s*)*))\]$/);
-    if (!match) return <span key={`${part}-${index}`}>{part}</span>;
+    if (!match) return <span key={`text-${parentIndex}-${index}`}>{part}</span>;
 
     const citationNumbers = match[1]
       .split(",")
@@ -739,12 +784,12 @@ function renderWithCitations(text, sources, message, onCitationClick) {
       .filter((value) => Number.isInteger(value));
 
     return (
-      <span key={`${part}-${index}`} className="citation-group">
+      <span key={`citation-${parentIndex}-${index}`} className="citation-group">
         {citationNumbers.map((citationNumber, citationIndex) => {
           const valid = citationNumber >= 1 && citationNumber <= (sources?.length || 0);
           return (
             <button
-              key={`${part}-${citationNumber}-${citationIndex}`}
+              key={`citation-${parentIndex}-${index}-${citationNumber}-${citationIndex}`}
               type="button"
               className={`citation-chip${valid ? "" : " disabled"}`}
               onClick={(event) => {
@@ -761,16 +806,6 @@ function renderWithCitations(text, sources, message, onCitationClick) {
       </span>
     );
   });
-}
-
-function citedSourceIds(answer, sources) {
-  if (!Array.isArray(sources)) return [];
-
-  const citationNumbers = [...String(answer || "").matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)]
-    .flatMap((match) => match[1].split(",").map((value) => Number(value.trim())))
-    .filter((number) => Number.isInteger(number) && number >= 1 && number <= sources.length);
-
-  return [...new Set(citationNumbers.map((number) => sources[number - 1]?.id).filter(Boolean))];
 }
 
 function normalizeAdviserRanking(items) {

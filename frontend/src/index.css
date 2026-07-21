@@ -419,6 +419,33 @@ h3 {
   color: #2169a8;
 }
 
+.badge.confidence-badge {
+  white-space: normal;
+}
+
+.badge.confidence-badge.high {
+  background: rgba(63, 185, 80, 0.13);
+  color: #226d30;
+}
+
+.badge.confidence-badge.moderate {
+  background: rgba(210, 153, 34, 0.15);
+  color: #9a6700;
+}
+
+.badge.confidence-badge.low {
+  background: rgba(210, 68, 68, 0.13);
+  color: #a32d2d;
+}
+
+.confidence-indicator {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: currentColor;
+}
+
 .citation-chip {
   display: inline-flex;
   align-items: center;
@@ -864,6 +891,35 @@ h3 {
   inset: 20px auto auto 20px;
   max-width: 360px;
   z-index: 2;
+}
+
+.graph-hover-card {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 2;
+  display: grid;
+  gap: 5px;
+  max-width: min(300px, calc(100% - 36px));
+  padding: 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.96);
+  color: var(--text-primary);
+  box-shadow: 0 12px 28px rgba(36, 41, 47, 0.14);
+  pointer-events: none;
+}
+
+.graph-hover-card span,
+.graph-hover-card small {
+  color: var(--text-secondary);
+}
+
+.graph-hover-card p {
+  margin: 2px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .query-overlay-label {
