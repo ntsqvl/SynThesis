@@ -237,8 +237,11 @@ Copy-Item .env.example .env
 Open `backend/.env` and configure provider:
 
 ```env
-# OpenAI
-OPENAI_API_KEY=your_key_here
+# API Creds
+AIML_API_KEY = your_openai_api_key_here
+AIMLAPI_BASE_URL = 
+OPENAI_API_KEY=your_openai_api_key_here
+OPENAI_BASE_URL=
 ```
 
 Keep the configured embedding model aligned with the project:
