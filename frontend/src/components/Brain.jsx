@@ -110,9 +110,14 @@ export default function Brain({ session = EMPTY_SESSION, setSession, onBrainResu
         repositoryConfidence: normalized.repositoryConfidence
       });
     } catch (requestError) {
+      const timeoutMessage =
+        "The backend took too long to answer this follow-up. Retry the query or shorten it.";
+      const fallbackMessage =
+        "Backend unreachable. Start FastAPI on port 8000, then retry the query.";
       setError(
-        requestError?.response?.data?.detail ||
-          "Backend unreachable. Start FastAPI on port 8000, then retry the query."
+        requestError?.code === "ECONNABORTED" || String(requestError?.message || "").toLowerCase().includes("timeout")
+          ? timeoutMessage
+          : requestError?.response?.data?.detail || fallbackMessage
       );
     } finally {
       setLoading(false);

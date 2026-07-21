@@ -65,8 +65,28 @@ const STOPWORDS = new Set([
 ]);
 
 const SHORT_TERMS = new Set(["ai", "ml", "nlp", "iot", "cnn", "ann", "gan", "svm", "rnn"]);
+const MAX_SIGNAL_BRIDGES = 8;
 
-export default function BrainConstellation({ query, sources = [], activeSource, onSourceSelect, compact = false }) {
+// Opt-in fixture for manually validating the public graph contract without the API.
+export const BRAIN_CONSTELLATION_FIXTURE = {
+  graph: {
+    nodes: [
+      { id: "t1", label: "Student Retention Study", type: "thesis", highlight: true },
+      { id: "a1", label: "Dr. Santos", type: "adviser" },
+      { id: "m1", label: "Survey Analysis", type: "methodology" },
+      { id: "g1", label: "No study on rural cohorts", type: "gap" },
+      { id: "g2", label: "Longitudinal evidence needed", type: "research_gap", highlighted: true }
+    ],
+    links: [
+      { source: "a1", target: "t1", label: "advises" },
+      { source: "m1", target: "t1", label: "uses" },
+      { source: "g1", target: "t1", label: "gap around this cluster", highlight: true },
+      { source: "g2", target: "t1", label: "evidence gap" }
+    ]
+  }
+};
+
+export default function BrainConstellation({ query, sources = [], activeSource, onSourceSelect, compact = false, graph }) {
   const [payload, setPayload] = useState(null);
   const [selectedNode, setSelectedNode] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -77,12 +97,19 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
   const sourceRefs = useMemo(() => buildSourceRefs(sources), [sources]);
   const highlightTerms = useMemo(() => extractHighlightTerms(query), [query]);
   const graphData = useMemo(
-    () => normalizeMapPayload(payload, highlightTerms, sourceRefs),
-    [payload, highlightTerms, sourceRefs]
+    () => normalizeMapPayload(graph ?? payload, highlightTerms, sourceRefs),
+    [graph, payload, highlightTerms, sourceRefs]
   );
   const activeNodeId = resolveActiveNodeId(activeSource, sourceRefs);
 
   useEffect(() => {
+    if (graph) {
+      setLoading(false);
+      setError(null);
+      setSelectedNode(null);
+      return undefined;
+    }
+
     const cleanQuery = String(query || "").trim();
     if (!cleanQuery) {
       setPayload(null);
@@ -115,7 +142,7 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
     return () => {
       cancelled = true;
     };
-  }, [query]);
+  }, [graph, query]);
 
   useEffect(() => {
     if (!activeNodeId) return;
@@ -123,7 +150,9 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
     if (match) setSelectedNode((current) => (current?.id === match.id ? current : match));
   }, [activeNodeId, graphData.nodes]);
 
-  const highlightedCount = graphData.nodes.filter((node) => node.queryHighlighted || node.sourceHighlighted).length;
+  const highlightedCount = graphData.nodes.filter(
+    (node) => node.isHighlighted || (selectedNode && String(node.id) === String(selectedNode.id))
+  ).length;
 
   return (
     <section className={`card brain-graph-card${compact ? " compact" : ""}`} aria-label="Brain query graph visualization">
@@ -176,9 +205,9 @@ export default function BrainConstellation({ query, sources = [], activeSource, 
               linkLabel={(link) => link.label || link.relationship || "related"}
               nodeRelSize={5}
               linkVisibility={() => true}
-              linkColor={(link) => (link.highlighted || link.cited ? "#FFBF00" : "rgba(139, 148, 158, 0.72)")}
-              linkWidth={(link) => (link.highlighted || link.cited ? 2.6 : 1.15)}
-              linkDirectionalParticles={(link) => (link.highlighted || link.cited ? 3 : 0)}
+              linkColor={(link) => (link.bridge ? "#d97706" : isEmphasizedLink(link, selectedNode) ? "#e69532" : "rgba(117, 133, 153, 0.56)")}
+              linkWidth={(link) => (link.bridge ? 3.4 : isEmphasizedLink(link, selectedNode) ? 2.8 : 1.1)}
+              linkDirectionalParticles={(link) => (link.bridge ? 4 : isEmphasizedLink(link, selectedNode) ? 3 : 0)}
               linkDirectionalParticleWidth={2.4}
               linkDirectionalParticleSpeed={0.008}
               onNodeClick={(node) => {
@@ -213,7 +242,7 @@ function GraphGuide() {
       <div className="node-legend" aria-label="Graph legend">
         {LEGEND.map(([label, type]) => (
           <span key={type} className="legend-item">
-            <span className="legend-dot" style={{ background: NODE_COLORS[type] }} />
+            <span className={`legend-dot${type === "gap" ? " gap" : ""}`} style={{ background: type === "gap" ? "#fffaf0" : NODE_COLORS[type], borderColor: NODE_COLORS[type] }} />
             {label}
           </span>
         ))}
@@ -244,7 +273,7 @@ function NodeDetails({ node }) {
       <div className="meta-row" style={{ marginTop: 12 }}>
         <span className="badge info">{titleCase(node.type || "node")}</span>
         {node.domain && <span className="badge accent">{node.domain}</span>}
-        {(node.queryHighlighted || node.sourceHighlighted) && <span className="badge accent">Lit path</span>}
+        {node.isHighlighted && <span className="badge accent">Lit path</span>}
       </div>
       <div className="detail-list">
         {details.map(([label, value]) => (
@@ -266,8 +295,9 @@ function drawNode(node, ctx, globalScale, selectedNode, activeNodeId) {
   const radius = nodeRadius(node);
   const isSelected = selectedNode && String(selectedNode.id) === String(node.id);
   const isActiveSource = activeNodeId && String(activeNodeId) === String(node.id);
-  const isLit = Boolean(node.queryHighlighted || node.sourceHighlighted || isSelected || isActiveSource);
+  const isLit = Boolean(node.isHighlighted || isSelected || isActiveSource);
   const isCluster = type === "topic";
+  const isGap = type === "gap";
 
   ctx.save();
 
@@ -289,17 +319,31 @@ function drawNode(node, ctx, globalScale, selectedNode, activeNodeId) {
     ctx.stroke();
   }
 
-  ctx.beginPath();
-  ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
-  ctx.fillStyle = color;
-  ctx.shadowBlur = isLit ? 20 : 9;
-  ctx.shadowColor = isLit ? "rgba(255, 191, 0, 0.72)" : "rgba(36, 41, 47, 0.16)";
-  ctx.fill();
-  ctx.shadowBlur = 0;
-
-  ctx.lineWidth = isLit ? 2.8 : 1.35;
-  ctx.strokeStyle = isLit ? "#B8860B" : "rgba(255,255,255,0.95)";
-  ctx.stroke();
+  ctx.shadowBlur = isLit || isGap ? 20 : 9;
+  ctx.shadowColor = isLit || isGap ? "rgba(230, 149, 50, 0.62)" : "rgba(36, 41, 47, 0.16)";
+  if (isGap) {
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius - 2, 0, 2 * Math.PI, false);
+    ctx.fillStyle = "rgba(255, 250, 240, 0.94)";
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius + 2, 0, 2 * Math.PI, false);
+    ctx.setLineDash([3.5 / Math.max(globalScale, 0.8), 3 / Math.max(globalScale, 0.8)]);
+    ctx.lineWidth = (isLit ? 3 : 2.1) / Math.max(globalScale, 0.8);
+    ctx.strokeStyle = isLit ? "#bd6d16" : color;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  } else {
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false);
+    ctx.fillStyle = color;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.lineWidth = isLit ? 2.8 : 1.35;
+    ctx.strokeStyle = isLit ? "#bd6d16" : "rgba(255,255,255,0.95)";
+    ctx.stroke();
+  }
 
   if (node.sourceIndex) {
     ctx.beginPath();
@@ -325,8 +369,8 @@ function paintPointerArea(node, color, ctx) {
 function nodeRadius(node) {
   const type = normalizeType(node.type);
   const value = Number(node.val || node.count || node.weight || node.size);
-  const base = type === "topic" ? 9 : type === "thesis" ? 6 : 7;
-  const litBoost = node.queryHighlighted || node.sourceHighlighted ? 2 : 0;
+  const base = type === "topic" ? 9 : type === "gap" ? 9 : type === "thesis" ? 6 : 7;
+  const litBoost = node.isHighlighted ? 2 : 0;
   if (!Number.isFinite(value)) return base + litBoost;
   return Math.max(base, Math.min(18, base + Math.sqrt(value))) + litBoost;
 }
@@ -356,17 +400,58 @@ function normalizeMapPayload(payload, highlightTerms, sourceRefs) {
       const source = nodeById.get(String(link.source));
       const target = nodeById.get(String(link.target));
       const highlighted = Boolean(
-        link.cited ||
-          link.highlighted ||
-          source?.queryHighlighted ||
-          target?.queryHighlighted ||
-          source?.sourceHighlighted ||
-          target?.sourceHighlighted
+        link.highlight || link.highlighted || link.cited || source?.isHighlighted || target?.isHighlighted
       );
-      return { ...link, highlighted };
+      return { ...link, highlighted, isHighlighted: highlighted };
     });
 
-  return { nodes, links };
+  return { nodes, links: [...links, ...buildSignalBridges(nodes, links)] };
+}
+
+function buildSignalBridges(nodes, links) {
+  const existingPairs = new Set(
+    links.map((link) => [String(endpointId(link.source)), String(endpointId(link.target))].sort().join("::"))
+  );
+  const signals = nodes
+    .filter((node) => node.type === "thesis" && node.isHighlighted && nodeTopic(node))
+    .sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  const candidates = [];
+
+  for (let sourceIndex = 0; sourceIndex < signals.length; sourceIndex += 1) {
+    for (let targetIndex = sourceIndex + 1; targetIndex < signals.length; targetIndex += 1) {
+      const source = signals[sourceIndex];
+      const target = signals[targetIndex];
+      if (nodeTopic(source) === nodeTopic(target)) continue;
+
+      const pairKey = [String(source.id), String(target.id)].sort().join("::");
+      if (existingPairs.has(pairKey)) continue;
+
+      candidates.push({
+        source: source.id,
+        target: target.id,
+        label: "Shared query signal",
+        relationship: "shared_query_signal",
+        bridge: true,
+        highlighted: true,
+        isHighlighted: true,
+        score: sharedSignalScore(source, target)
+      });
+    }
+  }
+
+  return candidates
+    .sort((left, right) => right.score - left.score || `${left.source}:${left.target}`.localeCompare(`${right.source}:${right.target}`))
+    .slice(0, MAX_SIGNAL_BRIDGES);
+}
+
+function nodeTopic(node) {
+  return String(node.domain || node.category || node.cluster || "").trim().toLowerCase();
+}
+
+function sharedSignalScore(source, target) {
+  const sourceTerms = new Set([...toArray(source.highlightTerms), ...toArray(source.keywords)].map((term) => term.toLowerCase()));
+  const targetTerms = new Set([...toArray(target.highlightTerms), ...toArray(target.keywords)].map((term) => term.toLowerCase()));
+  return [...sourceTerms].filter((term) => targetTerms.has(term)).length;
 }
 
 function normalizeNode(node, index, highlightTerms, sourceRefs) {
@@ -385,10 +470,15 @@ function normalizeNode(node, index, highlightTerms, sourceRefs) {
     label: merged.label || merged.name || merged.title || String(id),
     proponents: merged.proponents_text || merged.proponents || merged.authors || merged.author,
     val: merged.val || merged.count || merged.weight || merged.size || (type === "topic" ? 12 : 4),
-    queryHighlighted: Boolean(merged.highlighted || matchingTerms.length > 0),
-    sourceHighlighted: Boolean(sourceRef),
+    highlight: Boolean(merged.highlight),
+    highlighted: Boolean(merged.highlighted),
+    queryHighlighted: Boolean(merged.queryHighlighted || matchingTerms.length > 0),
+    sourceHighlighted: Boolean(merged.sourceHighlighted || sourceRef),
     sourceIndex: sourceRef?.index,
-    highlightTerms: matchingTerms.length > 0 ? matchingTerms : toArray(merged.highlight_terms)
+    highlightTerms: matchingTerms.length > 0 ? matchingTerms : toArray(merged.highlight_terms),
+    isHighlighted: Boolean(
+      merged.highlight || merged.highlighted || merged.queryHighlighted || merged.sourceHighlighted || sourceRef || matchingTerms.length > 0
+    )
   };
 }
 
@@ -398,13 +488,21 @@ function normalizeLink(link) {
     source: String(endpointId(link.source ?? link.source_id ?? link.sourceId ?? link.from ?? link.from_id)),
     target: String(endpointId(link.target ?? link.target_id ?? link.targetId ?? link.to ?? link.to_id)),
     label: link.label || link.relationship || link.relation || link.type || "",
-    cited: Boolean(link.cited || link.highlighted || link.active || link.is_cited)
+    highlight: Boolean(link.highlight),
+    highlighted: Boolean(link.highlighted),
+    cited: Boolean(link.cited || link.highlighted || link.highlight || link.active || link.is_cited)
   };
 }
 
 function endpointId(value) {
   if (value && typeof value === "object") return value.id ?? value.node_id ?? value.name ?? "";
   return value ?? "";
+}
+
+function isEmphasizedLink(link, selectedNode) {
+  if (link.isHighlighted || !selectedNode) return Boolean(link.isHighlighted);
+  const selectedId = String(selectedNode.id);
+  return String(endpointId(link.source)) === selectedId || String(endpointId(link.target)) === selectedId;
 }
 
 function buildSourceRefs(sources) {
