@@ -12,6 +12,10 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from pydantic import BaseModel, Field
+from routers import advisers as advisers_router
+from routers import methods as methods_router
+from routers import synthesis as synthesis_router
+from services.advisers import rank_advisers
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
@@ -28,6 +32,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(advisers_router.router)
+app.include_router(methods_router.router)
+app.include_router(synthesis_router.router)
 
 with DATA_PATH.open(encoding="utf-8") as f:
     ALL_THESES: list[dict[str, Any]] = json.load(f)
@@ -289,41 +297,8 @@ def semantic_search(query: str, top_k: int = 8) -> list[dict[str, Any]]:
     return ranked or keyword_search(query, limit)
 
 
-def build_adviser_ranking(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    adviser_counts: Counter[str] = Counter()
-    adviser_records: defaultdict[str, list[str]] = defaultdict(list)
-    adviser_domains: defaultdict[str, set[str]] = defaultdict(set)
-
-    for record in results:
-        record_type = record.get("type", "")
-        title = record.get("title", "Untitled record")
-        domain = record.get("domain")
-
-        if record_type == "thesis":
-            adviser = record.get("mentor") or record.get("adviser") or "Unknown Adviser"
-            adviser_counts[adviser] += 1
-            adviser_records[adviser].append(title)
-            if domain:
-                adviser_domains[adviser].add(domain)
-            continue
-
-        authors = as_list(record.get("author"))
-        for index, author in enumerate(authors):
-            adviser_counts[author] += 2 if index == 0 else 1
-            adviser_records[author].append(title)
-            if domain:
-                adviser_domains[author].add(domain)
-
-    return [
-        {
-            "adviser": adviser,
-            "name": adviser,
-            "alignment_score": score,
-            "relevant_theses": sorted(set(adviser_records[adviser])),
-            "domains": sorted(adviser_domains[adviser]),
-        }
-        for adviser, score in adviser_counts.most_common()
-    ]
+def build_adviser_ranking(results: list[dict[str, Any]], query: str = "") -> list[dict[str, Any]]:
+    return rank_advisers(results, query)
 
 
 def extract_citation_numbers(answer: str) -> set[int]:
@@ -462,7 +437,7 @@ def health():
 @app.post("/api/brain")
 def brain(req: BrainRequest):
     results = semantic_search(req.query, req.top_k)
-    adviser_ranking = build_adviser_ranking(results)
+    adviser_ranking = build_adviser_ranking(results, req.query)
 
     context = "\n".join(
         f"[{index}] {record_kind(record)} | [{record.get('year') or 'n/d'}] "
@@ -695,7 +670,7 @@ def reports(
     adviser_ranking = build_adviser_ranking(theses)
     adviser_recommendations = [
         {
-            "name": item["adviser"],
+            "name": item["name"],
             "faculty": "CCSMA",
             "theses_mentored": len(item.get("relevant_theses", [])),
             "works_count": len(item.get("relevant_theses", [])),
